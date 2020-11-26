@@ -1,0 +1,56 @@
+DROP TABLE cids;
+DROP TABLE refs;
+DROP TABLE blocks;
+DROP TABLE atime;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS cids (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cid BLOB UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS refs (
+    parent_id INTEGER,
+    child_id INTEGER,
+    UNIQUE(parent_id,child_id)
+    CONSTRAINT fk_parent_id
+      FOREIGN KEY (parent_id)
+      REFERENCES cids(id)
+      ON DELETE CASCADE
+    CONSTRAINT fk_child_id
+      FOREIGN KEY (child_id)
+      REFERENCES cids(id)
+      ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS blocks (
+    block_id INTEGER PRIMARY_KEY,
+    block BLOB UNIQUE,
+    CONSTRAINT fk_block_id
+      FOREIGN KEY (block_id)
+      REFERENCES cids(id)
+      ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS atime (
+    atime INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id INTEGER UNIQUE,
+    CONSTRAINT fk_block_id
+      FOREIGN KEY (block_id)
+      REFERENCES cids(id)
+      ON DELETE CASCADE
+);
+
+BEGIN TRANSACTION;
+-- note that we would have to use INSERT OR IGNORE here in a real database
+INSERT INTO cids (cid) VALUES ("cid1");
+INSERT INTO blocks (block_id, block) VALUES (last_insert_rowid(), "value1");
+COMMIT;
+
+BEGIN TRANSACTION;
+-- note that we would have to use INSERT OR IGNORE here in a real database
+INSERT INTO cids (cid) VALUES ("cid2");
+INSERT INTO blocks (block_id, block) VALUES (last_insert_rowid(), "value2");
+COMMIT;
+
+INSERT INTO refs (parent_id, child_id) VALUES (1,2);
