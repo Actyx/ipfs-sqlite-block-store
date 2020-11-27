@@ -97,8 +97,92 @@ SELECT
   (SELECT COUNT(parent_id) FROM refs WHERE child_id = 1) +
   (SELECT COUNT(name) FROM aliases WHERE block_id = 1);
 
-SELECT * FROM
+DELETE FROM
   cids
 WHERE
-  NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id) AND
-  NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id);
+  (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id)) AND
+  (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id));
+
+DELETE FROM
+  cids
+WHERE
+  (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id));
+
+INSERT INTO aliases (name, block_id) VALUES ("alias2", 4);
+INSERT INTO aliases (name, block_id) VALUES ("alias1", 1);
+
+WITH RECURSIVE
+  ancestor_of(child_id) AS
+    (SELECT parent_id FROM refs WHERE child_id=1
+     UNION ALL
+     SELECT parent_id FROM refs JOIN ancestor_of USING(child_id))
+SELECT DISTINCT refs.parent_id FROM ancestor_of, refs;
+
+WITH RECURSIVE
+    ancestor_of(id) AS
+    (
+        SELECT parent_id FROM refs WHERE child_id=2
+        UNION ALL
+        SELECT DISTINCT parent_id FROM refs JOIN ancestor_of WHERE ancestor_of.id=refs.child_id
+    )
+SELECT id FROM ancestor_of;
+
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT child_id FROM refs WHERE parent_id=11121
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+SELECT id FROM descendant_of;
+
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT block_id FROM aliases
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+SELECT id FROM descendant_of;
+
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT block_id FROM aliases
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+DELETE FROM cids WHERE id NOT IN (SELECT id from descendant_of) LIMIT 1000;
+
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT child_id FROM refs WHERE parent_id=1121101
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+SELECT id FROM descendant_of;
+
+PRAGMA foreign_keys = ON;
+
+SELECT * FROM
+    cids
+WHERE
+    (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id)) AND
+    (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id));
+
+DELETE FROM
+    cids
+WHERE
+    (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id)) AND
+    (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id));
+LIMIT 1;
+
