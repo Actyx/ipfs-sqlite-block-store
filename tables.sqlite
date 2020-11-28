@@ -186,3 +186,15 @@ WHERE
     (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id));
 LIMIT 1;
 
+WITH RECURSIVE
+    descendant_of(id) AS (
+        -- non recursive part - simply look up the immediate children
+        SELECT 1099989
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    ),
+    orphaned_ids as (
+      SELECT id FROM descendant_of LEFT JOIN blocks ON descendant_of.id = blocks.block_id WHERE blocks.block_id IS NULL
+    )
+SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;

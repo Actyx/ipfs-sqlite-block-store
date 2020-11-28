@@ -244,6 +244,9 @@ SELECT DISTINCT id FROM ancestor_of;
     Ok(res)
 }
 
+/// get the descendants of an id.
+/// This just uses the refs table, so it does not ensure that we actually have data for each id.
+/// The value itself is included.
 fn get_descendants(txn: &Transaction, id: i64) -> rusqlite::Result<BTreeSet<i64>> {
     let mut res = BTreeSet::<i64>::new();
     let mut stmt = txn.prepare_cached(
@@ -252,12 +255,42 @@ WITH RECURSIVE
     descendant_of(id) AS
     (
         -- non recursive part - simply look up the immediate children
-        SELECT child_id FROM refs WHERE parent_id=?
+        SELECT ?
         UNION ALL
         -- recursive part - look up parents of all returned ids
         SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
     )
 SELECT DISTINCT id FROM descendant_of;
+"#,
+    )?;
+    let mut rows = stmt.query(&[id])?;
+    while let Some(row) = rows.next()? {
+        res.insert(row.get(0)?);
+    }
+    Ok(res)
+}
+
+/// get the set of descendants of an id for which we do not have the data yet.
+/// The value itself is included.
+fn get_missing_blocks(txn: &Transaction, id: i64) -> rusqlite::Result<BTreeSet<Vec<u8>>> {
+    let mut res = BTreeSet::new();
+    let mut stmt = txn.prepare_cached(
+        r#"
+WITH RECURSIVE
+    -- find descendants of id
+    descendant_of(id) AS (
+        -- non recursive part - simply look up the immediate children
+        SELECT ?
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    ),
+    -- find orphaned ids
+    orphaned_ids as (
+      SELECT DISTINCT id FROM descendant_of LEFT JOIN blocks ON descendant_of.id = blocks.block_id WHERE blocks.block_id IS NULL
+    )
+    -- retrieve corresponding cids
+SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?;
     let mut rows = stmt.query(&[id])?;
@@ -379,6 +412,16 @@ impl BlockStore {
             })
         })
     }
+
+    fn get_missing_blocks(&mut self, cid: &[u8]) -> anyhow::Result<BTreeSet<Vec<u8>>> {
+        self.in_txn(move |txn| {
+            Ok(if let Some(id) = get_id(&txn, cid)? {
+                get_missing_blocks(&txn, id)?
+            } else {
+                Default::default()
+            })
+        })
+    }
 }
 
 fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Vec<u8>, Vec<Block>)> {
@@ -439,7 +482,7 @@ fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Vec<u8>,
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let mut store = BlockStore::open("test.sqlite")?;
-    for i in 0..100 {
+    for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
         store.add_blocks(tree_blocks)?;
@@ -460,26 +503,28 @@ fn main() -> anyhow::Result<()> {
     // }
     store.add_blocks(tree_blocks)?;
     store.add_blocks(list_blocks)?;
-    println!(
-        "descendants of {:?} {:?}",
-        tree_root,
-        store.get_descendants(tree_root.as_ref())
-    );
-    println!(
-        "descendants of {:?} {:?}",
-        list_root,
-        store.get_descendants(list_root.as_ref())
-    );
+    // println!(
+    //     "descendants of {:?} {:?}",
+    //     tree_root,
+    //     store.get_descendants(tree_root.as_ref())
+    // );
+    // println!(
+    //     "descendants of {:?} {:?}",
+    //     list_root,
+    //     store.get_descendants(list_root.as_ref())
+    // );
     store.add(b"a", b"adata", &[b"b", b"c"])?;
+    println!("{:?}", store.get_missing_blocks(b"a")?);
     store.add(b"b", b"bdata", &[])?;
     store.add(b"c", b"cdata", &[])?;
     store.add(b"d", b"ddata", &[b"b", b"c"])?;
+
     store.alias(b"source1", Some(b"a"))?;
     store.alias(b"source2", Some(b"d"))?;
     store.gc_2(100000000)?;
     // let atime = store.gc(100000)?;
     // println!("{:?}", atime);
-    println!("ancestors {:?}", store.get_ancestors(b"b"));
-    println!("descendants {:?}", store.get_descendants(b"a"));
+    // println!("ancestors {:?}", store.get_ancestors(b"b"));
+    // println!("descendants {:?}", store.get_descendants(b"a"));
     Ok(())
 }

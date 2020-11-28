@@ -9,7 +9,8 @@ edition = "2018"
 [dependencies]
 rusqlite = "0.24.1"
 anyhow = "1.0.34"
-# cid = "0.6.0"
-# multihash = "0.13.1"
 env_logger = "0.8.2"
 tracing = "0.1.22"
+# much annoyance to get rid of hash algos that we don't care abou that bloat the deps
+multihash = { version = "0.13.1", default-features = false, features = ["sha2"] }
+cid = { version = "0.6.0", default-features = false, features = ["std"] }
