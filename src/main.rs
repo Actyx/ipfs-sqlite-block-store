@@ -3,17 +3,11 @@ use rusqlite::{config::DbConfig, params, Connection, OptionalExtension, Transact
 use std::{collections::BTreeSet, path::Path};
 use tracing::*;
 
-#[derive(Debug)]
-struct Person {
-    id: i32,
-    name: String,
-    data: Option<Vec<u8>>,
-}
-
 const INIT2: &'static str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
+PRAGMA synchronous = NORMAL;
+-- PRAGMA synchronous = FULL;
 PRAGMA page_size = 4096;
 -- PRAGMA synchronous = OFF;
 -- PRAGMA journal_mode = MEMORY;
@@ -52,6 +46,8 @@ CREATE TABLE IF NOT EXISTS blocks (
       ON DELETE CASCADE
 );
 
+-- for some reason this index is required to make the on delete cascade
+-- fast, despite block_id being a PRIMARY_KEY.
 CREATE INDEX IF NOT EXISTS idx_blocks_block_id
 ON blocks (block_id);
 
@@ -121,7 +117,40 @@ fn perform_gc(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
         (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id)) AND
         (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id)) AND
         (SELECT atime FROM atime WHERE atime.block_id = id) < ?
-        LIMIT 1000;
+        LIMIT 10000;
+        "#,
+            )?
+            .execute(&[grace_atime])?;
+        println!("collected {} rows", rows);
+        let cids: i64 = txn.query_row("SELECT COUNT(*) FROM cids", NO_PARAMS, |row| row.get(0))?;
+        println!("remaining {}", cids);
+        if rows == 0 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn perform_gc_2(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
+    // delete all ids that have neither a parent nor are aliased
+    loop {
+        let rows = txn
+            .prepare_cached(
+                r#"
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT block_id FROM aliases
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+DELETE FROM
+    cids
+WHERE
+    id NOT IN (SELECT id FROM descendant_of) AND
+    (SELECT atime FROM atime WHERE atime.block_id = id) < ? LIMIT 10000;
         "#,
             )?
             .execute(&[grace_atime])?;
@@ -283,66 +312,72 @@ impl BlockStore {
         Ok(())
     }
 
-    fn get(&mut self, key: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+    fn in_txn<T>(
+        &mut self,
+        f: impl FnOnce(&Transaction) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
         let txn = self.conn.transaction()?;
-        let result = get_block(&txn, key)?;
-        txn.commit()?;
-        Ok(result)
+        let result = f(&txn);
+        if result.is_ok() {
+            txn.commit()?;
+        }
+        result
+    }
+
+    fn get(&mut self, key: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+        self.in_txn(|txn| Ok(get_block(&txn, key)?))
     }
 
     fn has(&mut self, key: &[u8]) -> anyhow::Result<bool> {
-        let txn = self.conn.transaction()?;
-        let result = has_block(&txn, key)?;
-        txn.commit()?;
-        Ok(result)
+        self.in_txn(|txn| Ok(has_block(&txn, key)?))
     }
 
     fn add(&mut self, key: &[u8], data: &[u8], links: &[&[u8]]) -> anyhow::Result<bool> {
-        let txn = self.conn.transaction()?;
-        let result = add_block(&txn, key, data, links)?;
-        txn.commit()?;
-        Ok(result)
+        self.in_txn(|txn| Ok(add_block(&txn, key, data, links)?))
     }
 
     fn add_blocks(&mut self, blocks: Vec<Block>) -> anyhow::Result<()> {
-        let txn = self.conn.transaction()?;
-        for block in blocks {
-            let links = block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
-            add_block(&txn, &block.cid, &block.data, &links)?;
-        }
-        txn.commit()?;
-        Ok(())
+        self.in_txn(move |txn| {
+            for block in blocks {
+                let links = block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
+                add_block(&txn, &block.cid, &block.data, &links)?;
+            }
+            Ok(())
+        })
     }
 
     fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
-        let txn = self.conn.transaction()?;
-        perform_gc(&txn, grace_atime)?;
-        let result = get_current_atime(&txn)?;
-        txn.commit()?;
-        Ok(result)
+        self.in_txn(move |txn| {
+            perform_gc(&txn, grace_atime)?;
+            Ok(get_current_atime(&txn)?)
+        })
+    }
+
+    fn gc_2(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
+        self.in_txn(move |txn| {
+            perform_gc_2(&txn, grace_atime)?;
+            Ok(get_current_atime(&txn)?)
+        })
     }
 
     fn get_ancestors(&mut self, cid: &[u8]) -> anyhow::Result<BTreeSet<i64>> {
-        let txn = self.conn.transaction()?;
-        let result = if let Some(id) = get_id(&txn, cid)? {
-            get_ancestors(&txn, id)?
-        } else {
-            Default::default()
-        };
-        txn.commit()?;
-        Ok(result)
+        self.in_txn(move |txn| {
+            Ok(if let Some(id) = get_id(&txn, cid)? {
+                get_ancestors(&txn, id)?
+            } else {
+                Default::default()
+            })
+        })
     }
 
     fn get_descendants(&mut self, cid: &[u8]) -> anyhow::Result<BTreeSet<i64>> {
-        let txn = self.conn.transaction()?;
-        let result = if let Some(id) = get_id(&txn, cid)? {
-            println!("{} {}", std::str::from_utf8(cid).unwrap(), id);
-            get_descendants(&txn, id)?
-        } else {
-            Default::default()
-        };
-        txn.commit()?;
-        Ok(result)
+        self.in_txn(move |txn| {
+            Ok(if let Some(id) = get_id(&txn, cid)? {
+                get_descendants(&txn, id)?
+            } else {
+                Default::default()
+            })
+        })
     }
 }
 
@@ -376,7 +411,7 @@ fn build_tree_0(
     blocks: &mut Vec<Block>,
 ) -> anyhow::Result<Vec<u8>> {
     let node = format!("{}", prefix).as_bytes().to_vec();
-    let data_size = if depth == 0 { 1024 * 16 } else { 1024 };
+    let data_size = if depth == 0 { 1024 * 2 } else { 1024 };
     let mut data = vec![0u8; data_size];
     data[0..node.len()].copy_from_slice(node.as_ref());
     let children = if depth == 0 {
@@ -441,7 +476,7 @@ fn main() -> anyhow::Result<()> {
     store.add(b"d", b"ddata", &[b"b", b"c"])?;
     store.alias(b"source1", Some(b"a"))?;
     store.alias(b"source2", Some(b"d"))?;
-    // store.gc(100000000)?;
+    store.gc_2(100000000)?;
     // let atime = store.gc(100000)?;
     // println!("{:?}", atime);
     println!("ancestors {:?}", store.get_ancestors(b"b"));
