@@ -1,7 +1,9 @@
 // TODO: make sure cid -> id mapping is also created if there is no block!?
-use rusqlite::{config::DbConfig, params, Connection, OptionalExtension, Transaction, NO_PARAMS};
-use std::{collections::BTreeSet, path::Path};
+use cid::Cid;
+use rusqlite::{Connection, NO_PARAMS, OptionalExtension, Transaction, config::DbConfig, ToSql, params, types::ToSqlOutput, types::{FromSql, FromSqlError, ValueRef}};
+use std::{collections::BTreeSet, io::Cursor, convert::TryFrom, path::Path};
 use tracing::*;
+use anyhow::anyhow;
 
 const INIT2: &'static str = r#"
 PRAGMA foreign_keys = ON;
@@ -76,6 +78,93 @@ CREATE INDEX idx_aliases_block_id
 ON aliases (block_id);
 "#;
 
+struct CidBytes {
+    size: u8,
+    data: [u8; 63],
+}
+
+impl CidBytes {
+    fn len(&self) -> usize {
+        self.size as usize
+    }
+}
+
+impl AsRef<[u8]> for CidBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.data[0..self.len()]
+    }
+}
+
+impl Default for CidBytes {
+    fn default() -> Self {
+        Self {
+            size: 0,
+            data: [0; 63],
+        }
+    }
+}
+
+impl TryFrom<&Cid> for CidBytes {
+    type Error = cid::Error;
+    
+    fn try_from(value: &Cid) -> Result<Self, Self::Error> {
+        let mut res = Self::default();
+        value.write_bytes(&mut res)?;
+        Ok(res)
+    }
+}
+
+impl TryFrom<&CidBytes> for Cid {
+    type Error = cid::Error;
+
+    fn try_from(value: &CidBytes) -> Result<Self, Self::Error> {
+        Cid::read_bytes(Cursor::new(value.as_ref()))
+    }
+}
+
+impl TryFrom<&[u8]> for CidBytes {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let mut res = CidBytes::default();
+        if value.len() < 64 {
+            res.size = value.len() as u8;
+            res.data[0..value.len()].copy_from_slice(value);
+            Ok(res)
+        } else {
+            Err(anyhow!("too big"))
+        }
+    }
+}
+
+impl ToSql for CidBytes {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_ref())))
+    }
+}
+
+impl FromSql for CidBytes {
+    fn column_result(value: ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let bytes = value.as_blob()?;
+        Ok(CidBytes::try_from(bytes).map_err(|_| FromSqlError::InvalidType)?)
+    }
+}
+
+impl std::io::Write for CidBytes {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let len = self.len();
+        let cap: usize = 63 - len;
+        let n = cap.min(buf.len());
+        &self.data[len..len + n].copy_from_slice(&buf[0..n]);
+        self.size += n as u8;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 struct BlockStore {
     conn: Connection,
 }
@@ -118,7 +207,7 @@ fn perform_gc(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
         (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id)) AND
         (SELECT atime FROM atime WHERE atime.block_id = id) < ?
         LIMIT 10000;
-        "#,
+"#,
             )?
             .execute(&[grace_atime])?;
         println!("collected {} rows", rows);
