@@ -1,18 +1,8 @@
-// TODO: make sure cid -> id mapping is also created if there is no block!?
-use anyhow::anyhow;
-use cid::Cid;
 use rusqlite::{
-    config::DbConfig,
-    params,
-    types::ToSqlOutput,
-    types::{FromSql, FromSqlError, ValueRef},
-    Connection, OptionalExtension, ToSql, Transaction, NO_PARAMS,
+    config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
+    NO_PARAMS,
 };
-use std::{collections::BTreeSet, convert::TryFrom, io::Cursor, marker::PhantomData, path::Path};
-use tracing::*;
-mod cidbytes;
-#[cfg(test)]
-mod tests;
+use std::{collections::BTreeSet, marker::PhantomData, path::Path};
 
 const INIT: &'static str = r#"
 PRAGMA foreign_keys = ON;
@@ -143,7 +133,7 @@ fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn perform_gc(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
+fn perform_gc(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
     // delete all ids that have neither a parent nor are aliased
     loop {
         let rows = txn
@@ -181,7 +171,7 @@ fn add_block<C: ToSql>(
     key: C,
     data: &[u8],
     links: impl IntoIterator<Item = C>,
-) -> anyhow::Result<bool> {
+) -> rusqlite::Result<bool> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
@@ -268,36 +258,10 @@ SELECT DISTINCT id FROM ancestor_of;
     Ok(res)
 }
 
-/// get the descendants of an id.
-/// This just uses the refs table, so it does not ensure that we actually have data for each id.
-/// The value itself is included.
-fn get_descendants(txn: &Transaction, id: i64) -> rusqlite::Result<BTreeSet<i64>> {
-    let mut res = BTreeSet::<i64>::new();
-    let mut stmt = txn.prepare_cached(
-        r#"
-WITH RECURSIVE
-    descendant_of(id) AS
-    (
-        -- non recursive part - simply look up the immediate children
-        SELECT ?
-        UNION ALL
-        -- recursive part - look up parents of all returned ids
-        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
-    )
-SELECT DISTINCT id FROM descendant_of;
-"#,
-    )?;
-    let mut rows = stmt.query(&[id])?;
-    while let Some(row) = rows.next()? {
-        res.insert(row.get(0)?);
-    }
-    Ok(res)
-}
-
 /// get the descendants of an cid.
 /// This just uses the refs table, so it does not ensure that we actually have data for each cid.
 /// The value itself is included.
-fn get_descendants_of_cid<C: ToSql + FromSql>(
+fn get_descendants<C: ToSql + FromSql>(
     txn: &Transaction,
     cid: C,
 ) -> rusqlite::Result<Vec<C>> {
@@ -314,6 +278,7 @@ WITH RECURSIVE
     descendant_ids as (
         SELECT DISTINCT id FROM descendant_of
     )
+    -- retrieve corresponding cids - this is a set because of select distinct
     SELECT cid from cids,descendant_ids WHERE cids.id = descendant_ids.id;
 "#,
     )?;
@@ -341,7 +306,7 @@ WITH RECURSIVE
     orphaned_ids as (
       SELECT DISTINCT id FROM descendant_of LEFT JOIN blocks ON descendant_of.id = blocks.block_id WHERE blocks.block_id IS NULL
     )
-    -- retrieve corresponding cids
+    -- retrieve corresponding cids - this is a set because of select distinct
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?;
@@ -352,29 +317,17 @@ SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
     Ok(res)
 }
 
-fn init_db(conn: &mut Connection) -> anyhow::Result<()> {
+fn init_db(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch(INIT)?;
     assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
     Ok(())
 }
 
-pub struct Block {
-    cid: Vec<u8>,
-    data: Vec<u8>,
-    links: Vec<Vec<u8>>,
-}
-
-trait BlockX<C> {
+pub trait Block<C> {
     type I: Iterator<Item = C>;
     fn cid(&self) -> C;
     fn data(&self) -> &[u8];
     fn links(&self) -> Self::I;
-}
-
-impl Block {
-    fn new(cid: Vec<u8>, data: Vec<u8>, links: Vec<Vec<u8>>) -> Self {
-        Self { cid, data, links }
-    }
 }
 
 impl<C: ToSql + FromSql> BlockStore<C> {
@@ -387,7 +340,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn)?;
         Ok(Self {
@@ -396,7 +349,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn alias(&mut self, name: &[u8], key: Option<C>) -> anyhow::Result<()> {
+    pub fn alias(&mut self, name: &[u8], key: Option<C>) -> rusqlite::Result<()> {
         let txn = self.conn.transaction()?;
         if let Some(key) = key {
             let id = get_or_create_id(&txn, key)?;
@@ -410,55 +363,62 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         Ok(())
     }
 
-    pub fn get_block(&mut self, key: C) -> anyhow::Result<Option<Vec<u8>>> {
+    pub fn get_block(&mut self, key: C) -> rusqlite::Result<Option<Vec<u8>>> {
         self.in_txn(|txn| Ok(get_block(&txn, key)?))
     }
 
-    pub fn has_block(&mut self, key: C) -> anyhow::Result<bool> {
+    pub fn has_block(&mut self, key: C) -> rusqlite::Result<bool> {
         self.in_txn(|txn| Ok(has_block(&txn, key)?))
     }
 
-    pub fn has_cid(&mut self, key: C) -> anyhow::Result<bool> {
+    pub fn has_cid(&mut self, key: C) -> rusqlite::Result<bool> {
         self.in_txn(|txn| Ok(has_cid(&txn, key)?))
     }
 
-    pub fn add(&mut self, key: C, data: &[u8], links: impl IntoIterator<Item = C>) -> anyhow::Result<bool> {
+    pub fn add_block(
+        &mut self,
+        key: C,
+        data: &[u8],
+        links: impl IntoIterator<Item = C>,
+    ) -> rusqlite::Result<bool> {
         self.in_txn(|txn| Ok(add_block(&txn, key.into(), data, links)?))
     }
 
-    pub fn add_blocks(&mut self, blocks: Vec<Block>) -> anyhow::Result<()> {
+    pub fn add_blocks(
+        &mut self,
+        blocks: impl IntoIterator<Item = impl Block<C>>,
+    ) -> rusqlite::Result<()> {
         self.in_txn(move |txn| {
-            for block in blocks {
-                let links = block.links.iter().map(|x| x.clone());
-                add_block(&txn, block.cid, &block.data, links)?;
+            for block in blocks.into_iter() {
+                add_block(&txn, block.cid(), block.data(), block.links())?;
             }
             Ok(())
         })
     }
 
-    fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
+    pub fn gc(&mut self, grace_atime: i64) -> rusqlite::Result<Option<i64>> {
         self.in_txn(move |txn| {
             perform_gc(&txn, grace_atime)?;
             Ok(get_current_atime(&txn)?)
         })
     }
 
-    pub fn get_missing_blocks(&mut self, cid: C) -> anyhow::Result<Vec<C>> {
+    pub fn get_missing_blocks(&mut self, cid: C) -> rusqlite::Result<Vec<C>> {
         self.in_txn(move |txn| {
             let result = get_missing_blocks(&txn, cid)?;
             Ok(result)
         })
     }
 
-    pub fn get_descendants(&mut self, cid: C) -> anyhow::Result<Vec<C>> {
-        self.in_txn(move |txn| Ok(get_descendants_of_cid(&txn, cid)?))
+    pub fn get_descendants(&mut self, cid: C) -> rusqlite::Result<Vec<C>> {
+        self.in_txn(move |txn| Ok(get_descendants(&txn, cid)?))
     }
 
     /// execute a statement in a transaction
     fn in_txn<T>(
         &mut self,
-        f: impl FnOnce(&Transaction) -> anyhow::Result<T>,
-    ) -> anyhow::Result<T> {
+        f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
         let txn = self.conn.transaction()?;
         let result = f(&txn);
         if result.is_ok() {
@@ -466,107 +426,4 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         }
         result
     }
-}
-
-fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Vec<u8>, Vec<Block>)> {
-    assert!(n > 0);
-    let mut blocks = Vec::with_capacity(n);
-    let mk_node = |i: usize| format!("{}-{}", prefix, i);
-    let mk_data = |i: usize| format!("{}-{}-data", prefix, i);
-    let mut prev: Option<String> = None;
-    for i in 0..n {
-        let node = mk_node(i);
-        let data = mk_data(i);
-        let links = prev
-            .iter()
-            .map(|x| x.as_bytes().to_vec())
-            .collect::<Vec<Vec<u8>>>();
-        blocks.push(Block::new(
-            node.as_bytes().to_vec(),
-            data.as_bytes().to_vec(),
-            links,
-        ));
-        prev = Some(node);
-    }
-    Ok((prev.unwrap().as_bytes().to_vec(), blocks))
-}
-
-fn build_tree_0(
-    prefix: &str,
-    branch: u64,
-    depth: u64,
-    blocks: &mut Vec<Block>,
-) -> anyhow::Result<Vec<u8>> {
-    let node = format!("{}", prefix).as_bytes().to_vec();
-    let data_size = if depth == 0 { 1024 * 2 } else { 1024 };
-    let mut data = vec![0u8; data_size];
-    data[0..node.len()].copy_from_slice(node.as_ref());
-    let children = if depth == 0 {
-        Vec::new()
-    } else {
-        let mut children = Vec::new();
-        for i in 0..branch {
-            let cid = build_tree_0(&format!("{}-{}", prefix, i), branch, depth - 1, blocks)?;
-            children.push(cid);
-        }
-        children
-    };
-    let block = Block::new(node, data, children);
-    let cid = block.cid.clone();
-    blocks.push(block);
-    Ok(cid)
-}
-
-fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Vec<u8>, Vec<Block>)> {
-    let mut tmp = Vec::new();
-    let res = build_tree_0(prefix, branch, depth, &mut tmp)?;
-    Ok((res, tmp))
-}
-
-fn main() -> anyhow::Result<()> {
-    env_logger::init();
-    let mut store = BlockStore::open("test.sqlite")?;
-    for i in 0..10 {
-        println!("Adding filler tree {}", i);
-        let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
-        store.add_blocks(tree_blocks)?;
-        if i % 2 == 0 {
-            store.alias(&format!("tree-alias-{}", i).as_bytes(), Some(tree_root))?;
-        }
-    }
-    let (tree_root, tree_blocks) = build_tree("tree", 10, 4)?;
-    let (list_root, list_blocks) = build_chain("chain", 10000)?;
-    // for block in list_blocks {
-    //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
-    // }
-    // for block in tree_blocks {
-    //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
-    // }
-    store.add_blocks(tree_blocks)?;
-    store.add_blocks(list_blocks)?;
-    // println!(
-    //     "descendants of {:?} {:?}",
-    //     tree_root,
-    //     store.get_descendants(tree_root.as_ref())
-    // );
-    // println!(
-    //     "descendants of {:?} {:?}",
-    //     list_root,
-    //     store.get_descendants(list_root.as_ref())
-    // );
-    store.add(b"a".to_vec(), b"adata", vec![b"b".to_vec(), b"c".to_vec()])?;
-    println!("{:?}", store.get_missing_blocks(b"a".to_vec())?);
-    store.add(b"b".to_vec(), b"bdata", vec![])?;
-    store.add(b"c".to_vec(), b"cdata", vec![])?;
-    println!("{:?}", store.get_descendants(b"a".to_vec())?);
-    store.add(b"d".to_vec(), b"ddata", vec![b"b".to_vec(), b"c".to_vec()])?;
-
-    store.alias(b"source1", Some(b"a".to_vec()))?;
-    store.alias(b"source2", Some(b"d".to_vec()))?;
-    store.gc(100000000)?;
-    // let atime = store.gc(100000)?;
-    // println!("{:?}", atime);
-    // println!("ancestors {:?}", store.get_ancestors(b"b"));
-    // println!("descendants {:?}", store.get_descendants(b"a"));
-    Ok(())
 }

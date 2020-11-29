@@ -13,7 +13,7 @@ fn insert_get() -> anyhow::Result<()> {
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
-    store.add(a, b"abcd", vec![b, c])?;
+    store.add_block(a, b"abcd", vec![b, c])?;
     // we should have all three cids
     assert!(store.has_cid(a)?);
     assert!(store.has_cid(b)?);
@@ -40,7 +40,6 @@ fn insert_get() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn incremental_insert() -> anyhow::Result<()> {
     let mut store = BlockStore::memory()?;
@@ -52,9 +51,9 @@ fn incremental_insert() -> anyhow::Result<()> {
     // alias before even adding the block
     store.alias(b"alias1", Some(a))?;
     assert!(store.has_cid(a)?);
-    store.add(a, b"abcd", vec![b, c])?;
+    store.add_block(a, b"abcd", vec![b, c])?;
     store.gc(1000000)?;
-    store.add(c, b"fubar", vec![d, e])?;
+    store.add_block(c, b"fubar", vec![d, e])?;
     store.gc(1000000)?;
     // we should have all five cids
     assert!(store.has_cid(a)?);
