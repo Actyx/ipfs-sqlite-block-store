@@ -8,10 +8,13 @@ use rusqlite::{
     types::{FromSql, FromSqlError, ValueRef},
     Connection, OptionalExtension, ToSql, Transaction, NO_PARAMS,
 };
-use std::{collections::BTreeSet, convert::TryFrom, io::Cursor, path::Path};
+use std::{collections::BTreeSet, convert::TryFrom, io::Cursor, marker::PhantomData, path::Path};
 use tracing::*;
+mod cidbytes;
+#[cfg(test)]
+mod tests;
 
-const INIT2: &'static str = r#"
+const INIT: &'static str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -84,115 +87,29 @@ CREATE INDEX idx_aliases_block_id
 ON aliases (block_id);
 "#;
 
-struct CidBytes {
-    size: u8,
-    data: [u8; 63],
-}
-
-impl CidBytes {
-    fn len(&self) -> usize {
-        self.size as usize
-    }
-}
-
-impl AsRef<[u8]> for CidBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.data[0..self.len()]
-    }
-}
-
-impl Default for CidBytes {
-    fn default() -> Self {
-        Self {
-            size: 0,
-            data: [0; 63],
-        }
-    }
-}
-
-impl TryFrom<&Cid> for CidBytes {
-    type Error = cid::Error;
-
-    fn try_from(value: &Cid) -> Result<Self, Self::Error> {
-        let mut res = Self::default();
-        value.write_bytes(&mut res)?;
-        Ok(res)
-    }
-}
-
-impl TryFrom<&CidBytes> for Cid {
-    type Error = cid::Error;
-
-    fn try_from(value: &CidBytes) -> Result<Self, Self::Error> {
-        Cid::read_bytes(Cursor::new(value.as_ref()))
-    }
-}
-
-impl TryFrom<&[u8]> for CidBytes {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let mut res = CidBytes::default();
-        if value.len() < 64 {
-            res.size = value.len() as u8;
-            res.data[0..value.len()].copy_from_slice(value);
-            Ok(res)
-        } else {
-            Err(anyhow!("too big"))
-        }
-    }
-}
-
-impl ToSql for CidBytes {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::Borrowed(ValueRef::Blob(self.as_ref())))
-    }
-}
-
-impl FromSql for CidBytes {
-    fn column_result(value: ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        let bytes = value.as_blob()?;
-        Ok(CidBytes::try_from(bytes).map_err(|_| FromSqlError::InvalidType)?)
-    }
-}
-
-impl std::io::Write for CidBytes {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let len = self.len();
-        let cap: usize = 63 - len;
-        let n = cap.min(buf.len());
-        &self.data[len..len + n].copy_from_slice(&buf[0..n]);
-        self.size += n as u8;
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-struct BlockStore {
+pub struct BlockStore<C> {
     conn: Connection,
+    _c: PhantomData<C>,
 }
 
-fn get_id(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<Option<i64>> {
+fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
     txn.prepare_cached("SELECT id FROM cids WHERE cid=?")?
-        .query_row(&[cid.as_ref()], |row| row.get(0))
+        .query_row(&[cid], |row| row.get(0))
         .optional()
 }
 
-fn get_or_create_id(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<i64> {
-    let id = get_id(&txn, cid.as_ref())?;
+fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64> {
+    let id = get_id(&txn, cid.to_sql()?)?;
     Ok(if let Some(id) = id {
         id
     } else {
         txn.prepare_cached("INSERT INTO cids (cid) VALUES (?)")?
-            .execute(&[cid.as_ref()])?;
+            .execute(&[cid])?;
         txn.last_insert_rowid()
     })
 }
 
-fn update_atime(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<()> {
+fn update_atime(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<()> {
     if let Some(id) = get_id(txn, cid)? {
         let mut stmt = txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?;
         stmt.execute(&[id])?;
@@ -200,7 +117,7 @@ fn update_atime(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<()
     Ok(())
 }
 
-fn perform_gc(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
+fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
     // delete all ids that have neither a parent nor are aliased
     loop {
         let rows = txn
@@ -226,7 +143,7 @@ fn perform_gc(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn perform_gc_2(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
+fn perform_gc(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
     // delete all ids that have neither a parent nor are aliased
     loop {
         let rows = txn
@@ -259,7 +176,12 @@ WHERE
     Ok(())
 }
 
-fn add_block(txn: &Transaction, key: &[u8], data: &[u8], links: &[&[u8]]) -> anyhow::Result<bool> {
+fn add_block<C: ToSql>(
+    txn: &Transaction,
+    key: C,
+    data: &[u8],
+    links: impl IntoIterator<Item = C>,
+) -> anyhow::Result<bool> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
@@ -284,13 +206,13 @@ fn add_block(txn: &Transaction, key: &[u8], data: &[u8], links: &[&[u8]]) -> any
 }
 
 fn get_current_atime(txn: &Transaction) -> rusqlite::Result<Option<i64>> {
-    txn.prepare_cached("SELECT MAX(atime) FROM atime")?
+    txn.prepare_cached("SELECT seq FROM sqlite_sequence WHERE name='atime'")?
         .query_row(NO_PARAMS, |row| row.get(0))
         .optional()
 }
 
 /// Get a block, and update its atime
-fn get_block(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<Option<Vec<u8>>> {
+fn get_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<Vec<u8>>> {
     let id = get_id(&txn, cid)?;
     Ok(if let Some(id) = id {
         txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?
@@ -304,12 +226,21 @@ fn get_block(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<Option<Vec<u8>>>
 }
 
 /// Check if we have a block, without updating atime.
-fn has_block(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<bool> {
+fn has_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
     Ok(txn
         .prepare_cached(
             "SELECT 1 FROM blocks, cids WHERE blocks.block_id = cids.id AND cids.cid = ?",
         )?
-        .query_row(&[cid.as_ref()], |_| Ok(()))
+        .query_row(&[cid], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+/// Check if we have a cid, without updating atime.
+fn has_cid(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
+    Ok(txn
+        .prepare_cached("SELECT 1 FROM cids WHERE cids.cid = ?")?
+        .query_row(&[cid], |_| Ok(()))
         .optional()?
         .is_some())
 }
@@ -366,11 +297,11 @@ SELECT DISTINCT id FROM descendant_of;
 /// get the descendants of an cid.
 /// This just uses the refs table, so it does not ensure that we actually have data for each cid.
 /// The value itself is included.
-fn get_descendants_of_cid(
+fn get_descendants_of_cid<C: ToSql + FromSql>(
     txn: &Transaction,
-    cid: impl AsRef<[u8]>,
-) -> rusqlite::Result<BTreeSet<Vec<u8>>> {
-    let mut res = BTreeSet::<Vec<u8>>::new();
+    cid: C,
+) -> rusqlite::Result<Vec<C>> {
+    let mut res = Vec::<C>::new();
     let mut stmt = txn.prepare_cached(
         r#"
 WITH RECURSIVE
@@ -386,20 +317,17 @@ WITH RECURSIVE
     SELECT cid from cids,descendant_ids WHERE cids.id = descendant_ids.id;
 "#,
     )?;
-    let mut rows = stmt.query(&[cid.as_ref()])?;
+    let mut rows = stmt.query(&[cid])?;
     while let Some(row) = rows.next()? {
-        res.insert(row.get(0)?);
+        res.push(row.get(0)?);
     }
     Ok(res)
 }
 
 /// get the set of descendants of an id for which we do not have the data yet.
 /// The value itself is included.
-fn get_missing_blocks(
-    txn: &Transaction,
-    cid: impl AsRef<[u8]>,
-) -> rusqlite::Result<BTreeSet<Vec<u8>>> {
-    let mut res = BTreeSet::new();
+fn get_missing_blocks<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
+    let mut res = Vec::new();
     let mut stmt = txn.prepare_cached(
         r#"
 WITH RECURSIVE
@@ -417,17 +345,30 @@ WITH RECURSIVE
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?;
-    let mut rows = stmt.query(&[cid.as_ref()])?;
+    let mut rows = stmt.query(&[cid])?;
     while let Some(row) = rows.next()? {
-        res.insert(row.get(0)?);
+        res.push(row.get(0)?);
     }
     Ok(res)
 }
 
-struct Block {
+fn init_db(conn: &mut Connection) -> anyhow::Result<()> {
+    conn.execute_batch(INIT)?;
+    assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
+    Ok(())
+}
+
+pub struct Block {
     cid: Vec<u8>,
     data: Vec<u8>,
     links: Vec<Vec<u8>>,
+}
+
+trait BlockX<C> {
+    type I: Iterator<Item = C>;
+    fn cid(&self) -> C;
+    fn data(&self) -> &[u8];
+    fn links(&self) -> Self::I;
 }
 
 impl Block {
@@ -436,37 +377,81 @@ impl Block {
     }
 }
 
-impl BlockStore {
-    fn memory() -> anyhow::Result<Self> {
+impl<C: ToSql + FromSql> BlockStore<C> {
+    pub fn memory() -> anyhow::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
-        BlockStore::init_db(&mut conn)?;
-        Ok(Self { conn })
+        init_db(&mut conn)?;
+        Ok(Self {
+            conn,
+            _c: PhantomData,
+        })
     }
 
-    fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let mut conn = Connection::open(path)?;
-        BlockStore::init_db(&mut conn)?;
-        Ok(Self { conn })
+        init_db(&mut conn)?;
+        Ok(Self {
+            conn,
+            _c: PhantomData,
+        })
     }
 
-    fn init_db(conn: &mut Connection) -> anyhow::Result<()> {
-        conn.execute_batch(INIT2)?;
-        assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
-        Ok(())
-    }
-
-    fn alias(&mut self, name: &[u8], key: Option<&[u8]>) -> anyhow::Result<()> {
+    pub fn alias(&mut self, name: &[u8], key: Option<C>) -> anyhow::Result<()> {
         let txn = self.conn.transaction()?;
         if let Some(key) = key {
-            let id = get_id(&txn, key)?;
+            let id = get_or_create_id(&txn, key)?;
             txn.prepare_cached("REPLACE INTO aliases (name, block_id) VALUES (?, ?)")?
                 .execute(params![name, id])?;
         } else {
-            txn.prepare_cached("DELETE FROM ALIASES WHERE name = ?")?
+            txn.prepare_cached("DELETE FROM aliases WHERE name = ?")?
                 .execute(&[name])?;
         }
         txn.commit()?;
         Ok(())
+    }
+
+    pub fn get_block(&mut self, key: C) -> anyhow::Result<Option<Vec<u8>>> {
+        self.in_txn(|txn| Ok(get_block(&txn, key)?))
+    }
+
+    pub fn has_block(&mut self, key: C) -> anyhow::Result<bool> {
+        self.in_txn(|txn| Ok(has_block(&txn, key)?))
+    }
+
+    pub fn has_cid(&mut self, key: C) -> anyhow::Result<bool> {
+        self.in_txn(|txn| Ok(has_cid(&txn, key)?))
+    }
+
+    pub fn add(&mut self, key: C, data: &[u8], links: impl IntoIterator<Item = C>) -> anyhow::Result<bool> {
+        self.in_txn(|txn| Ok(add_block(&txn, key.into(), data, links)?))
+    }
+
+    pub fn add_blocks(&mut self, blocks: Vec<Block>) -> anyhow::Result<()> {
+        self.in_txn(move |txn| {
+            for block in blocks {
+                let links = block.links.iter().map(|x| x.clone());
+                add_block(&txn, block.cid, &block.data, links)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
+        self.in_txn(move |txn| {
+            perform_gc(&txn, grace_atime)?;
+            Ok(get_current_atime(&txn)?)
+        })
+    }
+
+    pub fn get_missing_blocks(&mut self, cid: C) -> anyhow::Result<Vec<C>> {
+        self.in_txn(move |txn| {
+            let result = get_missing_blocks(&txn, cid)?;
+            Ok(result)
+        })
+    }
+
+    pub fn get_descendants(&mut self, cid: C) -> anyhow::Result<Vec<C>> {
+        self.in_txn(move |txn| Ok(get_descendants_of_cid(&txn, cid)?))
     }
 
     /// execute a statement in a transaction
@@ -480,76 +465,6 @@ impl BlockStore {
             txn.commit()?;
         }
         result
-    }
-
-    fn get(&mut self, key: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
-        self.in_txn(|txn| Ok(get_block(&txn, key)?))
-    }
-
-    fn has(&mut self, key: impl AsRef<[u8]>) -> anyhow::Result<bool> {
-        self.in_txn(|txn| Ok(has_block(&txn, key)?))
-    }
-
-    fn add(&mut self, key: &[u8], data: &[u8], links: &[&[u8]]) -> anyhow::Result<bool> {
-        self.in_txn(|txn| Ok(add_block(&txn, key, data, links)?))
-    }
-
-    fn add_blocks(&mut self, blocks: Vec<Block>) -> anyhow::Result<()> {
-        self.in_txn(move |txn| {
-            for block in blocks {
-                let links = block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
-                add_block(&txn, &block.cid, &block.data, &links)?;
-            }
-            Ok(())
-        })
-    }
-
-    fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
-        self.in_txn(move |txn| {
-            perform_gc(&txn, grace_atime)?;
-            Ok(get_current_atime(&txn)?)
-        })
-    }
-
-    fn gc_2(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
-        self.in_txn(move |txn| {
-            perform_gc_2(&txn, grace_atime)?;
-            Ok(get_current_atime(&txn)?)
-        })
-    }
-
-    fn get_ancestors(&mut self, cid: &[u8]) -> anyhow::Result<BTreeSet<i64>> {
-        self.in_txn(move |txn| {
-            Ok(if let Some(id) = get_id(&txn, cid)? {
-                get_ancestors(&txn, id)?
-            } else {
-                Default::default()
-            })
-        })
-    }
-
-    fn get_descendants(&mut self, cid: &[u8]) -> anyhow::Result<BTreeSet<i64>> {
-        self.in_txn(move |txn| {
-            Ok(if let Some(id) = get_id(&txn, cid)? {
-                get_descendants(&txn, id)?
-            } else {
-                Default::default()
-            })
-        })
-    }
-
-    fn get_missing_blocks(&mut self, cid: impl AsRef<[u8]>) -> anyhow::Result<BTreeSet<Vec<u8>>> {
-        self.in_txn(move |txn| {
-            let result = get_missing_blocks(&txn, cid)?;
-            Ok(result)
-        })
-    }
-
-    fn get_descendants_of_cid(
-        &mut self,
-        cid: impl AsRef<[u8]>,
-    ) -> anyhow::Result<BTreeSet<Vec<u8>>> {
-        self.in_txn(move |txn| Ok(get_descendants_of_cid(&txn, cid)?))
     }
 }
 
@@ -616,10 +531,7 @@ fn main() -> anyhow::Result<()> {
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
         store.add_blocks(tree_blocks)?;
         if i % 2 == 0 {
-            store.alias(
-                &format!("tree-alias-{}", i).as_bytes(),
-                Some(tree_root.as_ref()),
-            )?;
+            store.alias(&format!("tree-alias-{}", i).as_bytes(), Some(tree_root))?;
         }
     }
     let (tree_root, tree_blocks) = build_tree("tree", 10, 4)?;
@@ -642,16 +554,16 @@ fn main() -> anyhow::Result<()> {
     //     list_root,
     //     store.get_descendants(list_root.as_ref())
     // );
-    store.add(b"a", b"adata", &[b"b", b"c"])?;
-    println!("{:?}", store.get_missing_blocks(b"a")?);
-    store.add(b"b", b"bdata", &[])?;
-    store.add(b"c", b"cdata", &[])?;
-    println!("{:?}", store.get_descendants_of_cid(b"a")?);
-    store.add(b"d", b"ddata", &[b"b", b"c"])?;
+    store.add(b"a".to_vec(), b"adata", vec![b"b".to_vec(), b"c".to_vec()])?;
+    println!("{:?}", store.get_missing_blocks(b"a".to_vec())?);
+    store.add(b"b".to_vec(), b"bdata", vec![])?;
+    store.add(b"c".to_vec(), b"cdata", vec![])?;
+    println!("{:?}", store.get_descendants(b"a".to_vec())?);
+    store.add(b"d".to_vec(), b"ddata", vec![b"b".to_vec(), b"c".to_vec()])?;
 
-    store.alias(b"source1", Some(b"a"))?;
-    store.alias(b"source2", Some(b"d"))?;
-    store.gc_2(100000000)?;
+    store.alias(b"source1", Some(b"a".to_vec()))?;
+    store.alias(b"source2", Some(b"d".to_vec()))?;
+    store.gc(100000000)?;
     // let atime = store.gc(100000)?;
     // println!("{:?}", atime);
     // println!("ancestors {:?}", store.get_ancestors(b"b"));
