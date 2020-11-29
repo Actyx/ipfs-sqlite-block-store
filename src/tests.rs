@@ -1,15 +1,20 @@
-use crate::{cidbytes::CidBytes, BlockStore};
-use std::io::Write;
+use crate::Store;
+use multihash::{Code, MultihashDigest};
 
-fn cid(data: &str) -> CidBytes {
-    let mut res = CidBytes::default();
-    res.write(data.as_bytes()).unwrap();
-    res
+fn cid(name: &str) -> cid::Cid {
+    let hash = Code::Sha2_256.digest(name.as_bytes());
+    cid::Cid::new_v1(0x71, hash)
 }
+
+// fn cid(name: &str) -> CidBytes {
+//     let mut res = CidBytes::default();
+//     res.write(name.as_bytes()).unwrap();
+//     res
+// }
 
 #[test]
 fn insert_get() -> anyhow::Result<()> {
-    let mut store = BlockStore::memory()?;
+    let mut store = Store::memory()?;
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
@@ -42,7 +47,7 @@ fn insert_get() -> anyhow::Result<()> {
 
 #[test]
 fn incremental_insert() -> anyhow::Result<()> {
-    let mut store = BlockStore::memory()?;
+    let mut store = Store::memory()?;
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");

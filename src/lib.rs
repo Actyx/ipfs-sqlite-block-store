@@ -3,7 +3,10 @@ mod db;
 #[cfg(test)]
 mod tests;
 
-use std::convert::{TryFrom, TryInto};
+use std::{
+    convert::{TryFrom, TryInto},
+    path::Path,
+};
 
 use cid::Cid;
 use cidbytes::CidBytes;
@@ -47,12 +50,26 @@ impl TryFrom<CidBlock> for CidBytesBlock {
         Ok(Self {
             cid: (&value.cid).try_into()?,
             data: value.data,
-            links: value.links.iter().map(CidBytes::try_from).collect::<std::result::Result<Vec<_>, cid::Error>>()?,
+            links: value
+                .links
+                .iter()
+                .map(CidBytes::try_from)
+                .collect::<std::result::Result<Vec<_>, cid::Error>>()?,
         })
     }
 }
 
 impl Store {
+    pub fn memory() -> anyhow::Result<Self> {
+        Ok(Self {
+            inner: BlockStore::memory()?,
+        })
+    }
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        Ok(Self {
+            inner: BlockStore::open(path)?,
+        })
+    }
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<Cid>) -> anyhow::Result<()> {
         let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(&x)).transpose()?;
         Ok(self.inner.alias(name.as_ref(), link)?)
@@ -87,9 +104,28 @@ impl Store {
         Ok(self.inner.gc(grace_atime)?)
     }
     pub fn add_blocks(&mut self, blocks: impl IntoIterator<Item = CidBlock>) -> anyhow::Result<()> {
-        let blocks = blocks.into_iter().map(CidBytesBlock::try_from)
+        let blocks = blocks
+            .into_iter()
+            .map(CidBytesBlock::try_from)
             .collect::<cid::Result<Vec<_>>>()?;
         self.inner.add_blocks(blocks)?;
         Ok(())
+    }
+    pub fn add_block(
+        &mut self,
+        cid: Cid,
+        data: &[u8],
+        links: impl IntoIterator<Item = Cid>,
+    ) -> anyhow::Result<bool> {
+        let cid = CidBytes::try_from(&cid)?;
+        let links = links
+            .into_iter()
+            .map(|x| CidBytes::try_from(&x))
+            .collect::<cid::Result<Vec<_>>>()?;
+        Ok(self.inner.add_block(cid, data, links)?)
+    }
+    pub fn get_block(&mut self, cid: Cid) -> anyhow::Result<Option<Vec<u8>>> {
+        let cid = CidBytes::try_from(&cid)?;
+        Ok(self.inner.get_block(cid)?)
     }
 }

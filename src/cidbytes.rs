@@ -94,3 +94,11 @@ impl std::io::Write for CidBytes {
         Ok(())
     }
 }
+
+// fn to_cid_bytes(cids: impl Iterator<Item = Cid>) -> impl Iterator<Item = cid::Result<CidBytes>> {
+//     cids.map(|x| CidBytes::try_from(&x))
+// }
+
+// fn from_cid_bytes(cids: impl Iterator<Item = CidBytes>) -> impl Iterator<Item = cid::Result<Cid>> {
+//     cids.map(|x| Cid::try_from(&x))
+// }
