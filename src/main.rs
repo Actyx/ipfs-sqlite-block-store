@@ -1,9 +1,15 @@
 // TODO: make sure cid -> id mapping is also created if there is no block!?
-use cid::Cid;
-use rusqlite::{Connection, NO_PARAMS, OptionalExtension, Transaction, config::DbConfig, ToSql, params, types::ToSqlOutput, types::{FromSql, FromSqlError, ValueRef}};
-use std::{collections::BTreeSet, io::Cursor, convert::TryFrom, path::Path};
-use tracing::*;
 use anyhow::anyhow;
+use cid::Cid;
+use rusqlite::{
+    config::DbConfig,
+    params,
+    types::ToSqlOutput,
+    types::{FromSql, FromSqlError, ValueRef},
+    Connection, OptionalExtension, ToSql, Transaction, NO_PARAMS,
+};
+use std::{collections::BTreeSet, convert::TryFrom, io::Cursor, path::Path};
+use tracing::*;
 
 const INIT2: &'static str = r#"
 PRAGMA foreign_keys = ON;
@@ -106,7 +112,7 @@ impl Default for CidBytes {
 
 impl TryFrom<&Cid> for CidBytes {
     type Error = cid::Error;
-    
+
     fn try_from(value: &Cid) -> Result<Self, Self::Error> {
         let mut res = Self::default();
         value.write_bytes(&mut res)?;
@@ -169,24 +175,24 @@ struct BlockStore {
     conn: Connection,
 }
 
-fn get_id(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<Option<i64>> {
+fn get_id(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<Option<i64>> {
     txn.prepare_cached("SELECT id FROM cids WHERE cid=?")?
-        .query_row(&[&cid], |row| row.get(0))
+        .query_row(&[cid.as_ref()], |row| row.get(0))
         .optional()
 }
 
-fn get_or_create_id(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<i64> {
-    let id = get_id(&txn, cid)?;
+fn get_or_create_id(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<i64> {
+    let id = get_id(&txn, cid.as_ref())?;
     Ok(if let Some(id) = id {
         id
     } else {
         txn.prepare_cached("INSERT INTO cids (cid) VALUES (?)")?
-            .execute(&[&cid])?;
+            .execute(&[cid.as_ref()])?;
         txn.last_insert_rowid()
     })
 }
 
-fn update_atime(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<()> {
+fn update_atime(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<()> {
     if let Some(id) = get_id(txn, cid)? {
         let mut stmt = txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?;
         stmt.execute(&[id])?;
@@ -254,7 +260,7 @@ WHERE
 }
 
 fn add_block(txn: &Transaction, key: &[u8], data: &[u8], links: &[&[u8]]) -> anyhow::Result<bool> {
-    let id = get_or_create_id(&txn, key)?;
+    let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
         .query_row(&[id], |_| Ok(()))
@@ -298,16 +304,14 @@ fn get_block(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<Option<Vec<u8>>>
 }
 
 /// Check if we have a block, without updating atime.
-fn has_block(txn: &Transaction, cid: &[u8]) -> rusqlite::Result<bool> {
-    let id = get_id(&txn, cid)?;
-    Ok(if let Some(id) = id {
-        txn.prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
-            .query_row(&[id], |_| Ok(()))
-            .optional()?
-            .is_some()
-    } else {
-        false
-    })
+fn has_block(txn: &Transaction, cid: impl AsRef<[u8]>) -> rusqlite::Result<bool> {
+    Ok(txn
+        .prepare_cached(
+            "SELECT 1 FROM blocks, cids WHERE blocks.block_id = cids.id AND cids.cid = ?",
+        )?
+        .query_row(&[cid.as_ref()], |_| Ok(()))
+        .optional()?
+        .is_some())
 }
 
 fn get_ancestors(txn: &Transaction, id: i64) -> rusqlite::Result<BTreeSet<i64>> {
@@ -359,19 +363,50 @@ SELECT DISTINCT id FROM descendant_of;
     Ok(res)
 }
 
+/// get the descendants of an cid.
+/// This just uses the refs table, so it does not ensure that we actually have data for each cid.
+/// The value itself is included.
+fn get_descendants_of_cid(
+    txn: &Transaction,
+    cid: impl AsRef<[u8]>,
+) -> rusqlite::Result<BTreeSet<Vec<u8>>> {
+    let mut res = BTreeSet::<Vec<u8>>::new();
+    let mut stmt = txn.prepare_cached(
+        r#"
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        SELECT id FROM cids WHERE cid = ?
+        UNION ALL
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    ),
+    descendant_ids as (
+        SELECT DISTINCT id FROM descendant_of
+    )
+    SELECT cid from cids,descendant_ids WHERE cids.id = descendant_ids.id;
+"#,
+    )?;
+    let mut rows = stmt.query(&[cid.as_ref()])?;
+    while let Some(row) = rows.next()? {
+        res.insert(row.get(0)?);
+    }
+    Ok(res)
+}
+
 /// get the set of descendants of an id for which we do not have the data yet.
 /// The value itself is included.
-fn get_missing_blocks(txn: &Transaction, id: i64) -> rusqlite::Result<BTreeSet<Vec<u8>>> {
+fn get_missing_blocks(
+    txn: &Transaction,
+    cid: impl AsRef<[u8]>,
+) -> rusqlite::Result<BTreeSet<Vec<u8>>> {
     let mut res = BTreeSet::new();
     let mut stmt = txn.prepare_cached(
         r#"
 WITH RECURSIVE
-    -- find descendants of id
+    -- find descendants of cid, including the id of the cid itself
     descendant_of(id) AS (
-        -- non recursive part - simply look up the immediate children
-        SELECT ?
+        SELECT id FROM cids WHERE cid = ?
         UNION ALL
-        -- recursive part - look up parents of all returned ids
         SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
     ),
     -- find orphaned ids
@@ -382,7 +417,7 @@ WITH RECURSIVE
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?;
-    let mut rows = stmt.query(&[id])?;
+    let mut rows = stmt.query(&[cid.as_ref()])?;
     while let Some(row) = rows.next()? {
         res.insert(row.get(0)?);
     }
@@ -434,6 +469,7 @@ impl BlockStore {
         Ok(())
     }
 
+    /// execute a statement in a transaction
     fn in_txn<T>(
         &mut self,
         f: impl FnOnce(&Transaction) -> anyhow::Result<T>,
@@ -450,7 +486,7 @@ impl BlockStore {
         self.in_txn(|txn| Ok(get_block(&txn, key)?))
     }
 
-    fn has(&mut self, key: &[u8]) -> anyhow::Result<bool> {
+    fn has(&mut self, key: impl AsRef<[u8]>) -> anyhow::Result<bool> {
         self.in_txn(|txn| Ok(has_block(&txn, key)?))
     }
 
@@ -502,14 +538,18 @@ impl BlockStore {
         })
     }
 
-    fn get_missing_blocks(&mut self, cid: &[u8]) -> anyhow::Result<BTreeSet<Vec<u8>>> {
+    fn get_missing_blocks(&mut self, cid: impl AsRef<[u8]>) -> anyhow::Result<BTreeSet<Vec<u8>>> {
         self.in_txn(move |txn| {
-            Ok(if let Some(id) = get_id(&txn, cid)? {
-                get_missing_blocks(&txn, id)?
-            } else {
-                Default::default()
-            })
+            let result = get_missing_blocks(&txn, cid)?;
+            Ok(result)
         })
+    }
+
+    fn get_descendants_of_cid(
+        &mut self,
+        cid: impl AsRef<[u8]>,
+    ) -> anyhow::Result<BTreeSet<Vec<u8>>> {
+        self.in_txn(move |txn| Ok(get_descendants_of_cid(&txn, cid)?))
     }
 }
 
@@ -606,6 +646,7 @@ fn main() -> anyhow::Result<()> {
     println!("{:?}", store.get_missing_blocks(b"a")?);
     store.add(b"b", b"bdata", &[])?;
     store.add(b"c", b"cdata", &[])?;
+    println!("{:?}", store.get_descendants_of_cid(b"a")?);
     store.add(b"d", b"ddata", &[b"b", b"c"])?;
 
     store.alias(b"source1", Some(b"a"))?;
