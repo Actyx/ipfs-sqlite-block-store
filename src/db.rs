@@ -261,10 +261,7 @@ SELECT DISTINCT id FROM ancestor_of;
 /// get the descendants of an cid.
 /// This just uses the refs table, so it does not ensure that we actually have data for each cid.
 /// The value itself is included.
-fn get_descendants<C: ToSql + FromSql>(
-    txn: &Transaction,
-    cid: C,
-) -> rusqlite::Result<Vec<C>> {
+fn get_descendants<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
     let mut res = Vec::<C>::new();
     let mut stmt = txn.prepare_cached(
         r#"
@@ -292,6 +289,7 @@ WITH RECURSIVE
 /// get the set of descendants of an id for which we do not have the data yet.
 /// The value itself is included.
 fn get_missing_blocks<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
+    // TODO: handle the case where we don't even have the cid separately
     let mut res = Vec::new();
     let mut stmt = txn.prepare_cached(
         r#"
@@ -350,17 +348,17 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     }
 
     pub fn alias(&mut self, name: &[u8], key: Option<C>) -> rusqlite::Result<()> {
-        let txn = self.conn.transaction()?;
-        if let Some(key) = key {
-            let id = get_or_create_id(&txn, key)?;
-            txn.prepare_cached("REPLACE INTO aliases (name, block_id) VALUES (?, ?)")?
-                .execute(params![name, id])?;
-        } else {
-            txn.prepare_cached("DELETE FROM aliases WHERE name = ?")?
-                .execute(&[name])?;
-        }
-        txn.commit()?;
-        Ok(())
+        self.in_txn(|txn| {
+            if let Some(key) = key {
+                let id = get_or_create_id(&txn, key)?;
+                txn.prepare_cached("REPLACE INTO aliases (name, block_id) VALUES (?, ?)")?
+                    .execute(params![name, id])?;
+            } else {
+                txn.prepare_cached("DELETE FROM aliases WHERE name = ?")?
+                    .execute(&[name])?;
+            }
+            Ok(())
+        })
     }
 
     pub fn get_block(&mut self, key: C) -> rusqlite::Result<Option<Vec<u8>>> {
