@@ -164,7 +164,7 @@ DELETE FROM
     cids
 WHERE
     id NOT IN (SELECT id FROM descendant_of) AND
-    (SELECT atime FROM atime WHERE atime.block_id = id) < ? LIMIT 10000;
+    (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
         "#,
             )?
             .execute(&[grace_atime])?;
