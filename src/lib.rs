@@ -70,20 +70,20 @@ impl Store {
             inner: BlockStore::open(path)?,
         })
     }
-    pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<Cid>) -> anyhow::Result<()> {
-        let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(&x)).transpose()?;
-        Ok(self.inner.alias(name.as_ref(), link)?)
+    pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> anyhow::Result<()> {
+        let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(x)).transpose()?;
+        Ok(self.inner.alias(name.as_ref(), link.as_ref())?)
     }
-    pub fn has_cid(&mut self, cid: Cid) -> anyhow::Result<bool> {
-        let cid = CidBytes::try_from(&cid)?;
-        Ok(self.inner.has_cid(cid)?)
+    pub fn has_cid(&mut self, cid: &Cid) -> anyhow::Result<bool> {
+        let cid = CidBytes::try_from(cid)?;
+        Ok(self.inner.has_cid(&cid)?)
     }
-    pub fn has_block(&mut self, cid: Cid) -> anyhow::Result<bool> {
-        let cid = CidBytes::try_from(&cid)?;
-        Ok(self.inner.has_block(cid)?)
+    pub fn has_block(&mut self, cid: &Cid) -> anyhow::Result<bool> {
+        let cid = CidBytes::try_from(cid)?;
+        Ok(self.inner.has_block(&cid)?)
     }
-    pub fn get_descendants(&mut self, cid: Cid) -> anyhow::Result<Vec<Cid>> {
-        let cid = CidBytes::try_from(&cid)?;
+    pub fn get_descendants(&mut self, cid: &Cid) -> anyhow::Result<Vec<Cid>> {
+        let cid = CidBytes::try_from(cid)?;
         let result = self.inner.get_descendants(cid)?;
         let res = result
             .iter()
@@ -91,8 +91,8 @@ impl Store {
             .collect::<cid::Result<Vec<_>>>()?;
         Ok(res)
     }
-    pub fn get_missing_blocks(&mut self, cid: Cid) -> anyhow::Result<Vec<Cid>> {
-        let cid = CidBytes::try_from(&cid)?;
+    pub fn get_missing_blocks(&mut self, cid: &Cid) -> anyhow::Result<Vec<Cid>> {
+        let cid = CidBytes::try_from(cid)?;
         let result = self.inner.get_missing_blocks(cid)?;
         let res = result
             .iter()
@@ -113,19 +113,19 @@ impl Store {
     }
     pub fn add_block(
         &mut self,
-        cid: Cid,
+        cid: &Cid,
         data: &[u8],
         links: impl IntoIterator<Item = Cid>,
     ) -> anyhow::Result<bool> {
-        let cid = CidBytes::try_from(&cid)?;
+        let cid = CidBytes::try_from(cid)?;
         let links = links
             .into_iter()
             .map(|x| CidBytes::try_from(&x))
             .collect::<cid::Result<Vec<_>>>()?;
-        Ok(self.inner.add_block(cid, data, links)?)
+        Ok(self.inner.add_block(&cid, data, links)?)
     }
-    pub fn get_block(&mut self, cid: Cid) -> anyhow::Result<Option<Vec<u8>>> {
-        let cid = CidBytes::try_from(&cid)?;
-        Ok(self.inner.get_block(cid)?)
+    pub fn get_block(&mut self, cid: &Cid) -> anyhow::Result<Option<Vec<u8>>> {
+        let cid = CidBytes::try_from(cid)?;
+        Ok(self.inner.get_block(&cid)?)
     }
 }

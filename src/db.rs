@@ -168,7 +168,7 @@ WHERE
 
 fn add_block<C: ToSql>(
     txn: &Transaction,
-    key: C,
+    key: &C,
     data: &[u8],
     links: impl IntoIterator<Item = C>,
 ) -> rusqlite::Result<bool> {
@@ -347,7 +347,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn alias(&mut self, name: &[u8], key: Option<C>) -> rusqlite::Result<()> {
+    pub fn alias(&mut self, name: &[u8], key: Option<&C>) -> rusqlite::Result<()> {
         self.in_txn(|txn| {
             if let Some(key) = key {
                 let id = get_or_create_id(&txn, key)?;
@@ -361,25 +361,25 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn get_block(&mut self, key: C) -> rusqlite::Result<Option<Vec<u8>>> {
+    pub fn get_block(&mut self, key: &C) -> rusqlite::Result<Option<Vec<u8>>> {
         self.in_txn(|txn| Ok(get_block(&txn, key)?))
     }
 
-    pub fn has_block(&mut self, key: C) -> rusqlite::Result<bool> {
+    pub fn has_block(&mut self, key: &C) -> rusqlite::Result<bool> {
         self.in_txn(|txn| Ok(has_block(&txn, key)?))
     }
 
-    pub fn has_cid(&mut self, key: C) -> rusqlite::Result<bool> {
+    pub fn has_cid(&mut self, key: &C) -> rusqlite::Result<bool> {
         self.in_txn(|txn| Ok(has_cid(&txn, key)?))
     }
 
     pub fn add_block(
         &mut self,
-        key: C,
+        key: &C,
         data: &[u8],
         links: impl IntoIterator<Item = C>,
     ) -> rusqlite::Result<bool> {
-        self.in_txn(|txn| Ok(add_block(&txn, key.into(), data, links)?))
+        self.in_txn(|txn| Ok(add_block(&txn, key, data, links)?))
     }
 
     pub fn add_blocks(
@@ -388,7 +388,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     ) -> rusqlite::Result<()> {
         self.in_txn(move |txn| {
             for block in blocks.into_iter() {
-                add_block(&txn, block.cid(), block.data(), block.links())?;
+                add_block(&txn, &block.cid(), block.data(), block.links())?;
             }
             Ok(())
         })

@@ -7,11 +7,13 @@ use rusqlite::{
 };
 use std::{convert::TryFrom, io::Cursor};
 
+const MAX_SIZE: usize = 39;
+
 /// a representation of a cid that implements AsRef<[u8]>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CidBytes {
     size: u8,
-    data: [u8; 63],
+    data: [u8; MAX_SIZE],
 }
 
 impl CidBytes {
@@ -30,7 +32,7 @@ impl Default for CidBytes {
     fn default() -> Self {
         Self {
             size: 0,
-            data: [0; 63],
+            data: [0; MAX_SIZE],
         }
     }
 }
@@ -83,7 +85,7 @@ impl FromSql for CidBytes {
 impl std::io::Write for CidBytes {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let len = self.len();
-        let cap: usize = 63 - len;
+        let cap: usize = MAX_SIZE - len;
         let n = cap.min(buf.len());
         &self.data[len..len + n].copy_from_slice(&buf[0..n]);
         self.size += n as u8;
