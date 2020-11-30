@@ -83,5 +83,9 @@ fn incremental_insert() -> anyhow::Result<()> {
     store.gc(1000000)?;
     // after gc, we shold still have the block
     assert!(store.has_block(&a)?);
+    store.alias(b"alias1", Some(&c))?;
+    store.gc(1000000)?;
+    assert!(!store.has_block(&a)?);
+    assert!(store.has_block(&c)?);
     Ok(())
 }

@@ -32,10 +32,6 @@ ON refs (child_id);
 CREATE TABLE IF NOT EXISTS blocks (
     block_id INTEGER PRIMARY_KEY,
     block BLOB UNIQUE,
-    CONSTRAINT fk_block_id
-      FOREIGN KEY (block_id)
-      REFERENCES cids(id)
-      ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS atime (

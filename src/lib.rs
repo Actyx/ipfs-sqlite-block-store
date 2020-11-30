@@ -101,7 +101,11 @@ impl Store {
         Ok(res)
     }
     pub fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
-        Ok(self.inner.gc(grace_atime)?)
+        let res = self.inner.gc(grace_atime)?;
+        while self.inner.count_orphaned()? > 0 {
+            self.inner.delete_orphaned()?;
+        }
+        Ok(res)
     }
     pub fn add_blocks(&mut self, blocks: impl IntoIterator<Item = CidBlock>) -> anyhow::Result<()> {
         let blocks = blocks
