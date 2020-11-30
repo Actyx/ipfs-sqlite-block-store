@@ -1,3 +1,15 @@
+//! A sqlite based block store for content-addressed data that tries to do as much as possible
+//! in the database.
+//!
+//! Tables:
+//! cids: mapping from cid (blob < 64 bytes) to id (u64)
+//! refs: m:n mapping from block ids to their children
+//! blocks: the actual data for blocks, keyed by block id
+//!    cids can exist in the system without having data associated with them!
+//! atime: table for a monotonic index that tracks block access time, for the gc grace period mechanism
+//! alias: table that contains named pins for roots of graphs that should not be deleted by gc
+//!    you can alias incomplete or in fact non-existing data. It is not necessary for a pinned dag
+//!    to be complete.
 use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
