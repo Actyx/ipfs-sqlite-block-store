@@ -52,11 +52,7 @@ ON refs (child_id);
 
 CREATE TABLE IF NOT EXISTS blocks (
     block_id INTEGER PRIMARY_KEY,
-    block BLOB,
-    CONSTRAINT fk_block_id
-      FOREIGN KEY (block_id)
-      REFERENCES cids(id)
-      ON DELETE CASCADE
+    block BLOB
 );
 
 -- for some reason this index is required to make the on delete cascade
@@ -147,10 +143,8 @@ fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
 
 fn perform_gc(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
     // delete all ids that have neither a parent nor are aliased
-    loop {
-        let rows = txn
-            .prepare_cached(
-                r#"
+    txn.prepare_cached(
+        r#"
 WITH RECURSIVE
     descendant_of(id) AS
     (
@@ -166,15 +160,33 @@ WHERE
     id NOT IN (SELECT id FROM descendant_of) AND
     (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
         "#,
-            )?
-            .execute(&[grace_atime])?;
-        println!("collected {} rows", rows);
-        let cids: i64 = txn.query_row("SELECT COUNT(*) FROM cids", NO_PARAMS, |row| row.get(0))?;
-        println!("remaining {}", cids);
-        if rows == 0 {
-            break;
-        }
-    }
+    )?
+        .execute(&[grace_atime])?;
+    Ok(())
+}
+
+fn count_orphaned(txn: &Transaction) -> rusqlite::Result<u32> {
+    let res = txn.prepare_cached(
+        r#"
+SELECT COUNT(block_id) FROM blocks
+WHERE
+    block_id NOT IN (SELECT id FROM cids);
+        "#
+    )?
+        .query_row(NO_PARAMS, |row| row.get(0))?;
+    Ok(res)
+}
+
+fn delete_orphaned(txn: &Transaction) -> rusqlite::Result<()> {
+    txn.prepare_cached(
+        r#"
+DELETE FROM
+    blocks
+WHERE
+    block_id NOT IN (SELECT id FROM cids);
+        "#,
+    )?
+        .execute(NO_PARAMS)?;
     Ok(())
 }
 
@@ -410,6 +422,18 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         self.in_txn(move |txn| {
             perform_gc(&txn, grace_atime)?;
             Ok(get_current_atime(&txn)?)
+        })
+    }
+
+    pub fn count_orphaned(&mut self) -> rusqlite::Result<u32> {
+        self.in_txn(move |txn| {
+            Ok(count_orphaned(&txn)?)
+        })
+    }
+
+    pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
+        self.in_txn(move |txn| {
+            Ok(delete_orphaned(&txn)?)
         })
     }
 
