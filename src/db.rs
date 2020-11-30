@@ -183,7 +183,7 @@ fn delete_orphaned(txn: &Transaction) -> rusqlite::Result<()> {
 DELETE FROM
     blocks
 WHERE
-    block_id NOT IN (SELECT id FROM cids);
+    block_id NOT IN (SELECT id FROM cids) LIMIT 10000;
         "#,
     )?
         .execute(NO_PARAMS)?;
