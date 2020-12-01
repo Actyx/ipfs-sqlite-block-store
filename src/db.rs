@@ -14,6 +14,7 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
+use std::convert::TryFrom;
 use std::{collections::BTreeSet, marker::PhantomData, path::Path};
 
 const INIT: &'static str = r#"
@@ -22,6 +23,8 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 -- PRAGMA synchronous = FULL;
 PRAGMA page_size = 4096;
+-- PRAGMA page_size = 8192;
+-- PRAGMA page_size = 16384;
 -- PRAGMA synchronous = OFF;
 -- PRAGMA journal_mode = MEMORY;
 
@@ -94,6 +97,16 @@ fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
     txn.prepare_cached("SELECT id FROM cids WHERE cid=?")?
         .query_row(&[cid], |row| row.get(0))
         .optional()
+}
+
+fn get_block_size(txn: &Transaction) -> rusqlite::Result<i64> {
+    txn.prepare("SELECT COALESCE(SUM(LENGTH(block)), 0) FROM blocks")?
+        .query_row(NO_PARAMS, |row| row.get(0))
+}
+
+fn get_block_count(txn: &Transaction) -> rusqlite::Result<i64> {
+    txn.prepare("SELECT count(*) FROM blocks")?
+        .query_row(NO_PARAMS, |row| row.get(0))
 }
 
 fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64> {
@@ -230,8 +243,8 @@ fn get_current_atime(txn: &Transaction) -> rusqlite::Result<Option<i64>> {
 fn get_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<Vec<u8>>> {
     let id = get_id(&txn, cid)?;
     Ok(if let Some(id) = id {
-        txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?
-            .execute(&[id])?;
+        // txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?
+        //     .execute(&[id])?;
         txn.prepare_cached("SELECT block FROM blocks WHERE block_id = ?")?
             .query_row(&[id], |row| row.get(0))
             .optional()?
@@ -316,10 +329,9 @@ WITH RECURSIVE
 /// It is safe to call this method for a cid we don't have yet.
 fn get_missing_blocks<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
     let id = get_or_create_id(&txn, cid)?;
-    let mut res = Vec::new();
     let mut stmt = txn.prepare_cached(
         r#"
-WITH RECURSIVE
+WITH     RECURSIVE
     -- find descendants of cid, including the id of the cid itself
     descendant_of(id) AS (
         SELECT ?
@@ -334,7 +346,18 @@ WITH RECURSIVE
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?;
+    let mut res = Vec::new();
     let mut rows = stmt.query(&[id])?;
+    while let Some(row) = rows.next()? {
+        res.push(row.get(0)?);
+    }
+    Ok(res)
+}
+
+fn get_cids<C: FromSql>(txn: &Transaction) -> rusqlite::Result<Vec<C>> {
+    let mut stmt = txn.prepare_cached(r#"SELECT cid FROM cids"#)?;
+    let mut rows = stmt.query(NO_PARAMS)?;
+    let mut res = Vec::new();
     while let Some(row) = rows.next()? {
         res.push(row.get(0)?);
     }
@@ -376,7 +399,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     pub fn alias(&mut self, name: &[u8], key: Option<&C>) -> rusqlite::Result<()> {
         self.in_txn(|txn| {
             if let Some(key) = key {
-                let id = get_or_create_id(&txn, key)?;
+                let id = get_or_create_id(txn, key)?;
                 txn.prepare_cached("REPLACE INTO aliases (name, block_id) VALUES (?, ?)")?
                     .execute(params![name, id])?;
             } else {
@@ -387,16 +410,16 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn get_block(&mut self, key: &C) -> rusqlite::Result<Option<Vec<u8>>> {
-        self.in_txn(|txn| Ok(get_block(&txn, key)?))
+    pub fn get_block(&self, key: &C) -> rusqlite::Result<Option<Vec<u8>>> {
+        self.in_ro_txn(|txn| Ok(get_block(txn, key)?))
     }
 
-    pub fn has_block(&mut self, key: &C) -> rusqlite::Result<bool> {
-        self.in_txn(|txn| Ok(has_block(&txn, key)?))
+    pub fn has_block(&self, key: &C) -> rusqlite::Result<bool> {
+        self.in_ro_txn(|txn| Ok(has_block(txn, key)?))
     }
 
-    pub fn has_cid(&mut self, key: &C) -> rusqlite::Result<bool> {
-        self.in_txn(|txn| Ok(has_cid(&txn, key)?))
+    pub fn has_cid(&self, key: &C) -> rusqlite::Result<bool> {
+        self.in_ro_txn(|txn| Ok(has_cid(txn, key)?))
     }
 
     pub fn add_block(
@@ -405,7 +428,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         data: &[u8],
         links: impl IntoIterator<Item = C>,
     ) -> rusqlite::Result<bool> {
-        self.in_txn(|txn| Ok(add_block(&txn, key, data, links)?))
+        self.in_txn(|txn| Ok(add_block(txn, key, data, links)?))
     }
 
     pub fn add_blocks(
@@ -414,7 +437,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     ) -> rusqlite::Result<()> {
         self.in_txn(move |txn| {
             for block in blocks.into_iter() {
-                add_block(&txn, &block.cid(), block.data(), block.links())?;
+                add_block(txn, &block.cid(), block.data(), block.links())?;
             }
             Ok(())
         })
@@ -423,30 +446,42 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     pub fn gc(&mut self, grace_atime: i64) -> rusqlite::Result<Option<i64>> {
         self.in_txn(move |txn| {
             perform_gc(&txn, grace_atime)?;
-            Ok(get_current_atime(&txn)?)
+            Ok(get_current_atime(txn)?)
         })
     }
 
-    pub fn count_orphaned(&mut self) -> rusqlite::Result<u32> {
-        self.in_txn(move |txn| Ok(count_orphaned(&txn)?))
-    }
-
     pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
-        self.in_txn(move |txn| Ok(delete_orphaned(&txn)?))
+        self.in_txn(move |txn| Ok(delete_orphaned(txn)?))
     }
 
-    pub fn get_missing_blocks(&mut self, cid: C) -> rusqlite::Result<Vec<C>> {
-        self.in_txn(move |txn| {
-            let result = get_missing_blocks(&txn, cid)?;
+    pub fn get_missing_blocks(&self, cid: C) -> rusqlite::Result<Vec<C>> {
+        self.in_ro_txn(move |txn| {
+            let result = get_missing_blocks(txn, cid)?;
             Ok(result)
         })
     }
 
-    pub fn get_descendants(&mut self, cid: C) -> rusqlite::Result<Vec<C>> {
-        self.in_txn(move |txn| Ok(get_descendants(&txn, cid)?))
+    pub fn get_descendants(&self, cid: C) -> rusqlite::Result<Vec<C>> {
+        self.in_ro_txn(move |txn| Ok(get_descendants(txn, cid)?))
     }
 
-    /// execute a statement in a transaction
+    pub fn get_block_count(&self) -> rusqlite::Result<u64> {
+        Ok(u64::try_from(self.in_ro_txn(move |txn| get_block_count(txn))?).unwrap())
+    }
+
+    pub fn get_block_size(&self) -> rusqlite::Result<u64> {
+        Ok(u64::try_from(self.in_ro_txn(move |txn| get_block_size(txn))?).unwrap())
+    }
+
+    pub fn get_cids(&self) -> rusqlite::Result<Vec<C>> {
+        self.in_ro_txn(|txn| get_cids(txn))
+    }
+
+    pub fn count_orphaned(&self) -> rusqlite::Result<u32> {
+        self.in_ro_txn(move |txn| Ok(count_orphaned(txn)?))
+    }
+
+    /// execute a statement in a write transaction
     fn in_txn<T>(
         &mut self,
         f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
@@ -456,6 +491,17 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         if result.is_ok() {
             txn.commit()?;
         }
+        result
+    }
+
+    /// execute a statement in a readonly transaction
+    /// nested transactions are not allowed here.
+    fn in_ro_txn<T>(
+        &self,
+        f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
+        let txn = self.conn.unchecked_transaction()?;
+        let result = f(&txn);
         result
     }
 }

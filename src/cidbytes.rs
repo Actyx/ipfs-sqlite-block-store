@@ -6,6 +6,7 @@ use rusqlite::{
 };
 use std::{convert::TryFrom, io::Cursor};
 
+/// This is sufficient for 32 byte hashes like sha2-256, but not for exotic hashes.
 const MAX_SIZE: usize = 39;
 
 /// a representation of a cid that implements AsRef<[u8]>
