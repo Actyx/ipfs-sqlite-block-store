@@ -29,9 +29,17 @@ pub struct OldBlock {
 }
 
 fn main() -> anyhow::Result<()> {
-    let roots = Path::new("/home/dvc/actyx/_bag_prod_2020-03-25");
-    let blocks = Path::new("/home/dvc/actyx/_bag_prod_2020-03-25-blocks.sqlite");
-    let output = Path::new("/home/dvc/actyx/bag_prod_sqlite");
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() < 2 {
+        println!("Usage: import <block store sql> <index sql>");
+        anyhow::bail!("");
+    } else {
+        println!("opening roots db {}", args[0]);
+        println!("opening blocks db {}", args[1]);
+    }
+    let roots = Path::new(&args[1]);
+    let blocks = Path::new(&args[2]);
+    let output = Path::new("out.sqlite");
     let mut store = BlockStore::open(output)?;
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -48,11 +56,12 @@ fn main() -> anyhow::Result<()> {
         })
     })?;
 
-    for block in block_iter {
+    for (i, block) in block_iter.enumerate() {
         let block = block?;
         let key = Cid::try_from(String::from_utf8(block.key)?)?;
         let cid = Cid::try_from(block.cid)?;
         assert_eq!(key.hash(), cid.hash());
+        println!("key {} {}", key, i);
         //println!("{} {} {}", cid, block.pinned, block.data.len());
         let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
         let mut set = HashSet::new();
@@ -71,7 +80,34 @@ fn main() -> anyhow::Result<()> {
         let now = std::time::Instant::now();
         store.alias(alias.as_bytes(), Some(&cid.to_bytes()))?;
         println!("{}ms", now.elapsed().as_millis());
+        let missing = store.get_missing_blocks(cid.to_bytes())?;
+        println!("{} blocks missing", missing.len());
     }
 
+    let now = std::time::Instant::now();
+    let mut len = 0usize;
+    for (i, cid) in store.get_cids()?.iter().enumerate() {
+        if i % 1000 == 0 {
+            println!("{} {}", cid.len(), i);
+        }
+        len += store.get_block(cid)?.map(|x| x.len()).unwrap_or(0)
+    }
+    let dt = now.elapsed().as_secs_f64();
+    println!("iterating over all blocks: {}s", dt);
+    println!("len = {}", len);
+    println!("rate = {} bytes/s", (len as f64) / dt);
+
+    let now = std::time::Instant::now();
+    let mut len = 0usize;
+    for (i, cid) in store.get_cids()?.iter().enumerate() {
+        if i % 1000 == 0 {
+            println!("{} {}", cid.len(), i);
+        }
+        len += store.get_block(cid)?.map(|x| x.len()).unwrap_or(0)
+    }
+    let dt = now.elapsed().as_secs_f64();
+    println!("iterating over all blocks: {}s", dt);
+    println!("len = {}", len);
+    println!("rate = {} bytes/s", (len as f64) / dt);
     Ok(())
 }

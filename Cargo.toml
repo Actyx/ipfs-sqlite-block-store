@@ -12,5 +12,6 @@ rusqlite = "0.24.1"
 tracing = "0.1.22"
 
 [dev-dependencies]
+libipld = { version = "0.8.2", default-features = false, features = ["dag-cbor"] }
 anyhow = "1.0.34"
 env_logger = "0.8.2"

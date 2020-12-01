@@ -108,6 +108,20 @@ impl Store {
         let cid = CidBytes::try_from(cid)?;
         Ok(self.inner.has_block(&cid)?)
     }
+    pub fn get_block_count(&mut self) -> Result<u64> {
+        Ok(self.inner.get_block_count()?)
+    }
+    pub fn get_block_size(&mut self) -> Result<u64> {
+        Ok(self.inner.get_block_size()?)
+    }
+    pub fn get_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
+        let result = self.inner.get_cids()?;
+        let res = result
+            .iter()
+            .map(Cid::try_from)
+            .collect::<cid::Result<C>>()?;
+        Ok(res)
+    }
     pub fn get_descendants(&mut self, cid: &Cid) -> Result<Vec<Cid>> {
         let cid = CidBytes::try_from(cid)?;
         let result = self.inner.get_descendants(cid)?;
@@ -130,7 +144,7 @@ impl Store {
         let t0 = Instant::now();
         let res = self.inner.gc(grace_atime)?;
         println!(
-            "determining ids to delete {}",
+            "deleting ids and most metadata {}",
             (Instant::now() - t0).as_secs_f64()
         );
         while self.inner.count_orphaned()? > 0 {
