@@ -4,17 +4,16 @@ mod error;
 #[cfg(test)]
 mod tests;
 
+use crate::cidbytes::CidBytes;
+pub use db::{Block, BlockStore};
+pub use error::{BlockStoreError, Result};
+use libipld::cid::{self, Cid};
 use std::{
     convert::{TryFrom, TryInto},
     iter::FromIterator,
     path::Path,
     time::Instant,
 };
-
-use cid::Cid;
-use cidbytes::CidBytes;
-pub use db::{Block, BlockStore};
-pub use error::{BlockStoreError, Result};
 
 pub struct Store {
     inner: BlockStore<CidBytes>,

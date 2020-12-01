@@ -1,9 +1,10 @@
 use crate::Store;
-use multihash::{Code, MultihashDigest};
+use libipld::cid::Cid;
+use libipld::multihash::{Code, MultihashDigest};
 
-fn cid(name: &str) -> cid::Cid {
+fn cid(name: &str) -> Cid {
     let hash = Code::Sha2_256.digest(name.as_bytes());
-    cid::Cid::new_v1(0x71, hash)
+    Cid::new_v1(0x71, hash)
 }
 
 // fn cid(name: &str) -> CidBytes {
