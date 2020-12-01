@@ -70,15 +70,8 @@ fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<CidBlock>)> {
     for i in 0..n {
         let node = mk_node(i);
         let data = mk_data(i);
-        let links = prev
-            .iter()
-            .map(|x| x.clone())
-            .collect::<Vec<Cid>>();
-        blocks.push(CidBlock::new(
-            node,
-            data,
-            links,
-        ));
+        let links = prev.iter().map(|x| x.clone()).collect::<Vec<Cid>>();
+        blocks.push(CidBlock::new(node, data, links));
         prev = Some(node);
     }
     Ok((prev.unwrap(), blocks))
@@ -116,7 +109,10 @@ fn main() -> anyhow::Result<()> {
     //     store.get_descendants(list_root.as_ref())
     // );
     store.add_block(&cid("a"), b"adata", vec![cid("b"), cid("c")])?;
-    println!("{:?}", fmt_cids(store.get_missing_blocks::<Vec<_>>(&cid("a"))?));
+    println!(
+        "{:?}",
+        fmt_cids(store.get_missing_blocks::<Vec<_>>(&cid("a"))?)
+    );
     store.add_block(&cid("b"), b"bdata", vec![])?;
     store.add_block(&cid("c"), b"cdata", vec![])?;
     println!("{:?}", fmt_cids(store.get_descendants(&cid("a"))?));

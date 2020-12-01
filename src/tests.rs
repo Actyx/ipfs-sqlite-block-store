@@ -32,7 +32,7 @@ fn insert_get() -> anyhow::Result<()> {
     // check descendants
     assert_eq!(store.get_descendants(&a)?, vec![a, b, c]);
     // check missing blocks - should be b and c
-    assert_eq!(store.get_missing_blocks(&a)?, vec![b, c]);
+    assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, c]);
     // alias the root
     store.alias(b"alias1", Some(&a))?;
     store.gc(1000000)?;
@@ -77,7 +77,7 @@ fn incremental_insert() -> anyhow::Result<()> {
     // check descendants
     assert_eq!(store.get_descendants(&a)?, vec![a, b, c, d, e]);
     // check missing blocks - should be b and c
-    assert_eq!(store.get_missing_blocks(&a)?, vec![b, d, e]);
+    assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, d, e]);
     // alias the root
     store.alias(b"alias1", Some(&a))?;
     store.gc(1000000)?;

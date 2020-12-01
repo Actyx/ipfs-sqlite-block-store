@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use cid::Cid;
 use rusqlite::{
     types::ToSqlOutput,
@@ -56,7 +55,7 @@ impl TryFrom<&CidBytes> for Cid {
 }
 
 impl TryFrom<&[u8]> for CidBytes {
-    type Error = anyhow::Error;
+    type Error = cid::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let mut res = CidBytes::default();
@@ -65,7 +64,7 @@ impl TryFrom<&[u8]> for CidBytes {
             res.data[0..value.len()].copy_from_slice(value);
             Ok(res)
         } else {
-            Err(anyhow!("too big"))
+            Err(cid::Error::ParsingError)
         }
     }
 }

@@ -57,7 +57,11 @@ fn main() -> anyhow::Result<()> {
         store.add_block(
             &block.cid().to_bytes(),
             block.data(),
-            block.references()?.into_iter().map(|cid| cid.to_bytes()).collect::<Vec<_>>(),
+            block
+                .references()?
+                .into_iter()
+                .map(|cid| cid.to_bytes())
+                .collect::<Vec<_>>(),
         )?;
     }
 

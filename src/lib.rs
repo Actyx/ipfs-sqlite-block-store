@@ -1,13 +1,20 @@
 mod cidbytes;
 mod db;
+mod error;
 #[cfg(test)]
 mod tests;
 
-use std::{convert::{TryFrom, TryInto}, iter::FromIterator, time::Instant, path::Path};
+use std::{
+    convert::{TryFrom, TryInto},
+    iter::FromIterator,
+    path::Path,
+    time::Instant,
+};
 
 use cid::Cid;
 use cidbytes::CidBytes;
 pub use db::{Block, BlockStore};
+pub use error::{BlockStoreError, Result};
 
 pub struct Store {
     inner: BlockStore<CidBytes>,
@@ -21,9 +28,7 @@ pub struct CidBlock {
 
 impl CidBlock {
     pub fn new(cid: Cid, data: Vec<u8>, links: Vec<Cid>) -> Self {
-        Self {
-            cid, data, links,
-        }
+        Self { cid, data, links }
     }
 }
 
@@ -68,7 +73,7 @@ impl Block<CidBytes> for CidBytesBlock {
 impl TryFrom<CidBlock> for CidBytesBlock {
     type Error = cid::Error;
 
-    fn try_from(value: CidBlock) -> Result<Self, Self::Error> {
+    fn try_from(value: CidBlock) -> std::result::Result<Self, Self::Error> {
         Ok(Self {
             cid: (&value.cid).try_into()?,
             data: value.data,
@@ -82,29 +87,29 @@ impl TryFrom<CidBlock> for CidBytesBlock {
 }
 
 impl Store {
-    pub fn memory() -> anyhow::Result<Self> {
+    pub fn memory() -> Result<Self> {
         Ok(Self {
             inner: BlockStore::memory()?,
         })
     }
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             inner: BlockStore::open(path)?,
         })
     }
-    pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> anyhow::Result<()> {
+    pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
         let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(x)).transpose()?;
         Ok(self.inner.alias(name.as_ref(), link.as_ref())?)
     }
-    pub fn has_cid(&mut self, cid: &Cid) -> anyhow::Result<bool> {
+    pub fn has_cid(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         Ok(self.inner.has_cid(&cid)?)
     }
-    pub fn has_block(&mut self, cid: &Cid) -> anyhow::Result<bool> {
+    pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         Ok(self.inner.has_block(&cid)?)
     }
-    pub fn get_descendants(&mut self, cid: &Cid) -> anyhow::Result<Vec<Cid>> {
+    pub fn get_descendants(&mut self, cid: &Cid) -> Result<Vec<Cid>> {
         let cid = CidBytes::try_from(cid)?;
         let result = self.inner.get_descendants(cid)?;
         let res = result
@@ -113,7 +118,7 @@ impl Store {
             .collect::<cid::Result<Vec<_>>>()?;
         Ok(res)
     }
-    pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> anyhow::Result<C> {
+    pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let result = self.inner.get_missing_blocks(cid)?;
         let res = result
@@ -122,18 +127,24 @@ impl Store {
             .collect::<cid::Result<C>>()?;
         Ok(res)
     }
-    pub fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
+    pub fn gc(&mut self, grace_atime: i64) -> Result<Option<i64>> {
         let t0 = Instant::now();
         let res = self.inner.gc(grace_atime)?;
-        println!("determining ids to delete {}", (Instant::now() - t0).as_secs_f64());
+        println!(
+            "determining ids to delete {}",
+            (Instant::now() - t0).as_secs_f64()
+        );
         while self.inner.count_orphaned()? > 0 {
             let t0 = Instant::now();
             self.inner.delete_orphaned()?;
-            println!("deleting 10000 blocks {}", (Instant::now() - t0).as_secs_f64());
+            println!(
+                "deleting 10000 blocks {}",
+                (Instant::now() - t0).as_secs_f64()
+            );
         }
         Ok(res)
     }
-    pub fn add_blocks(&mut self, blocks: impl IntoIterator<Item = CidBlock>) -> anyhow::Result<()> {
+    pub fn add_blocks(&mut self, blocks: impl IntoIterator<Item = CidBlock>) -> Result<()> {
         let blocks = blocks
             .into_iter()
             .map(CidBytesBlock::try_from)
@@ -146,7 +157,7 @@ impl Store {
         cid: &Cid,
         data: &[u8],
         links: impl IntoIterator<Item = Cid>,
-    ) -> anyhow::Result<bool> {
+    ) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         let links = links
             .into_iter()
@@ -154,7 +165,7 @@ impl Store {
             .collect::<cid::Result<Vec<_>>>()?;
         Ok(self.inner.add_block(&cid, data, links)?)
     }
-    pub fn get_block(&mut self, cid: &Cid) -> anyhow::Result<Option<Vec<u8>>> {
+    pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         let cid = CidBytes::try_from(cid)?;
         Ok(self.inner.get_block(&cid)?)
     }

@@ -161,18 +161,19 @@ WHERE
     (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
         "#,
     )?
-        .execute(&[grace_atime])?;
+    .execute(&[grace_atime])?;
     Ok(())
 }
 
 fn count_orphaned(txn: &Transaction) -> rusqlite::Result<u32> {
-    let res = txn.prepare_cached(
-        r#"
+    let res = txn
+        .prepare_cached(
+            r#"
 SELECT COUNT(block_id) FROM blocks
 WHERE
     block_id NOT IN (SELECT id FROM cids);
-        "#
-    )?
+        "#,
+        )?
         .query_row(NO_PARAMS, |row| row.get(0))?;
     Ok(res)
 }
@@ -186,7 +187,7 @@ WHERE
     block_id NOT IN (SELECT id FROM cids) LIMIT 10000;
         "#,
     )?
-        .execute(NO_PARAMS)?;
+    .execute(NO_PARAMS)?;
     Ok(())
 }
 
@@ -427,15 +428,11 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     }
 
     pub fn count_orphaned(&mut self) -> rusqlite::Result<u32> {
-        self.in_txn(move |txn| {
-            Ok(count_orphaned(&txn)?)
-        })
+        self.in_txn(move |txn| Ok(count_orphaned(&txn)?))
     }
 
     pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
-        self.in_txn(move |txn| {
-            Ok(delete_orphaned(&txn)?)
-        })
+        self.in_txn(move |txn| Ok(delete_orphaned(&txn)?))
     }
 
     pub fn get_missing_blocks(&mut self, cid: C) -> rusqlite::Result<Vec<C>> {
