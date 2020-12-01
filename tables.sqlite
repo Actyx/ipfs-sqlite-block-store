@@ -194,3 +194,18 @@ WITH RECURSIVE
       SELECT id FROM descendant_of LEFT JOIN blocks ON descendant_of.id = blocks.block_id WHERE blocks.block_id IS NULL
     )
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
+
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT block_id FROM aliases
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+SELECT id FROM
+    cids
+WHERE
+    id NOT IN (SELECT id FROM descendant_of) AND
+    (SELECT atime FROM atime WHERE atime.block_id = id) < 1000000;

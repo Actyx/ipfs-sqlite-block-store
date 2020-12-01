@@ -14,7 +14,7 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
-use std::convert::TryFrom;
+use std::{time::Instant, convert::TryFrom};
 use std::{collections::BTreeSet, marker::PhantomData, path::Path};
 
 const INIT: &'static str = r#"
@@ -175,6 +175,44 @@ WHERE
         "#,
     )?
     .execute(&[grace_atime])?;
+    Ok(())
+}
+
+fn perform_gc_2(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
+    // find all ids that have neither a parent nor are aliased
+    let mut id_query = txn.prepare_cached(
+        r#"
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        -- non recursive part - simply look up the immediate children
+        SELECT block_id FROM aliases
+        UNION ALL
+        -- recursive part - look up parents of all returned ids
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+    )
+SELECT id FROM
+    cids
+WHERE
+    id NOT IN (SELECT id FROM descendant_of) AND
+    (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
+        "#,
+    )?;
+    let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
+    let t0 = Instant::now();
+    let mut rows = id_query.query(&[grace_atime])?;
+    let mut ids: Vec<i64> = Vec::new();
+    while let Some(row) = rows.next()? {
+        ids.push(row.get(0)?);
+    }
+    let dt = t0.elapsed();
+    println!("figuring out the ids to delete took {}", dt.as_secs_f64());
+    for (i, id) in ids.iter().enumerate() {
+        if i % 10000 == 0 {
+            println!("deleted 10000 blocks {}", i);
+        }
+        delete_stmt.execute(&[id])?;
+    }
     Ok(())
 }
 
@@ -445,7 +483,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
 
     pub fn gc(&mut self, grace_atime: i64) -> rusqlite::Result<Option<i64>> {
         self.in_txn(move |txn| {
-            perform_gc(&txn, grace_atime)?;
+            perform_gc_2(&txn, grace_atime)?;
             Ok(get_current_atime(txn)?)
         })
     }

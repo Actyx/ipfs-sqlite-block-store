@@ -145,7 +145,7 @@ impl Store {
         let t0 = Instant::now();
         let res = self.inner.gc(grace_atime)?;
         println!(
-            "determining ids to delete {}",
+            "deleting ids and most metadata {}",
             (Instant::now() - t0).as_secs_f64()
         );
         while self.inner.count_orphaned()? > 0 {
