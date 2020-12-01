@@ -14,8 +14,8 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
-use std::{time::Instant, convert::TryFrom};
 use std::{collections::BTreeSet, marker::PhantomData, path::Path};
+use std::{convert::TryFrom, time::Instant};
 
 const INIT: &'static str = r#"
 PRAGMA foreign_keys = ON;

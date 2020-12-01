@@ -1,4 +1,4 @@
-use cid::Cid;
+use libipld::cid::{self, Cid};
 use rusqlite::{
     types::ToSqlOutput,
     types::{FromSql, FromSqlError, ValueRef},

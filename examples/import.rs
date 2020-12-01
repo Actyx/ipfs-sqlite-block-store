@@ -2,6 +2,7 @@ use libipld::cid::Cid;
 use libipld::store::DefaultParams;
 use rusqlite::{params, Connection, OpenFlags};
 use sqlite_block_store::BlockStore;
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::path::Path;
 
@@ -63,13 +64,12 @@ fn main() -> anyhow::Result<()> {
         println!("key {} {}", key, i);
         //println!("{} {} {}", cid, block.pinned, block.data.len());
         let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
-        let mut refs = Vec::new();
-        block.references(&mut refs)?;
+        let mut set = HashSet::new();
+        block.references(&mut set)?;
         store.add_block(
             &block.cid().to_bytes(),
             block.data(),
-            refs
-                .into_iter()
+            set.into_iter()
                 .map(|cid| cid.to_bytes())
                 .collect::<Vec<_>>(),
         )?;
