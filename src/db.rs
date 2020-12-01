@@ -115,7 +115,7 @@ fn update_atime(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> anyhow::Result<()> {
+fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
     // delete all ids that have neither a parent nor are aliased
     loop {
         let rows = txn
@@ -312,15 +312,16 @@ WITH RECURSIVE
 
 /// get the set of descendants of an id for which we do not have the data yet.
 /// The value itself is included.
+/// It is safe to call this method for a cid we don't have yet.
 fn get_missing_blocks<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
-    // TODO: handle the case where we don't even have the cid separately
+    let id = get_or_create_id(&txn, cid)?;
     let mut res = Vec::new();
     let mut stmt = txn.prepare_cached(
         r#"
 WITH RECURSIVE
     -- find descendants of cid, including the id of the cid itself
     descendant_of(id) AS (
-        SELECT id FROM cids WHERE cid = ?
+        SELECT ?
         UNION ALL
         SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
     ),
@@ -332,7 +333,7 @@ WITH RECURSIVE
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?;
-    let mut rows = stmt.query(&[cid])?;
+    let mut rows = stmt.query(&[id])?;
     while let Some(row) = rows.next()? {
         res.push(row.get(0)?);
     }
@@ -353,7 +354,7 @@ pub trait Block<C> {
 }
 
 impl<C: ToSql + FromSql> BlockStore<C> {
-    pub fn memory() -> anyhow::Result<Self> {
+    pub fn memory() -> rusqlite::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn)?;
         Ok(Self {

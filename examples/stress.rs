@@ -10,22 +10,6 @@ pub struct VecBlock {
     links: Vec<Vec<u8>>,
 }
 
-impl Block<Vec<u8>> for VecBlock {
-    type I = Box<dyn Iterator<Item = Vec<u8>>>;
-
-    fn cid(&self) -> Vec<u8> {
-        self.cid.clone()
-    }
-
-    fn data(&self) -> &[u8] {
-        self.data.as_ref()
-    }
-
-    fn links(&self) -> Self::I {
-        Box::new(self.links.clone().into_iter())
-    }
-}
-
 impl VecBlock {
     fn new(cid: Vec<u8>, data: Vec<u8>, links: Vec<Vec<u8>>) -> Self {
         Self { cid, data, links }
