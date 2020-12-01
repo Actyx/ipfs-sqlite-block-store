@@ -63,11 +63,12 @@ fn main() -> anyhow::Result<()> {
         println!("key {} {}", key, i);
         //println!("{} {} {}", cid, block.pinned, block.data.len());
         let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
+        let mut refs = Vec::new();
+        block.references(&mut refs)?;
         store.add_block(
             &block.cid().to_bytes(),
             block.data(),
-            block
-                .references()?
+            refs
                 .into_iter()
                 .map(|cid| cid.to_bytes())
                 .collect::<Vec<_>>(),

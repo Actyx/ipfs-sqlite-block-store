@@ -16,5 +16,5 @@ cid = { version = "0.6.0", default-features = false, features = ["std"] }
 derive_more = "0.99.11"
 
 [dev-dependencies]
-libipld = { version = "0.7.1", default-features = false, features = ["dag-cbor"] }
+libipld = { version = "0.8.2", default-features = false, features = ["dag-cbor"] }
 anyhow = "1.0.34"
