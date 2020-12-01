@@ -3,10 +3,7 @@ mod db;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    convert::{TryFrom, TryInto},
-    path::Path,
-};
+use std::{convert::{TryFrom, TryInto}, iter::FromIterator, time::Instant, path::Path};
 
 use cid::Cid;
 use cidbytes::CidBytes;
@@ -21,6 +18,31 @@ pub struct CidBlock {
     data: Vec<u8>,
     links: Vec<Cid>,
 }
+
+impl CidBlock {
+    pub fn new(cid: Cid, data: Vec<u8>, links: Vec<Cid>) -> Self {
+        Self {
+            cid, data, links,
+        }
+    }
+}
+
+impl Block<Cid> for CidBlock {
+    type I = std::vec::IntoIter<Cid>;
+
+    fn cid(&self) -> Cid {
+        self.cid
+    }
+
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    fn links(&self) -> Self::I {
+        self.links.clone().into_iter()
+    }
+}
+
 struct CidBytesBlock {
     cid: CidBytes,
     data: Vec<u8>,
@@ -91,19 +113,23 @@ impl Store {
             .collect::<cid::Result<Vec<_>>>()?;
         Ok(res)
     }
-    pub fn get_missing_blocks(&mut self, cid: &Cid) -> anyhow::Result<Vec<Cid>> {
+    pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> anyhow::Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let result = self.inner.get_missing_blocks(cid)?;
         let res = result
             .iter()
             .map(Cid::try_from)
-            .collect::<cid::Result<Vec<_>>>()?;
+            .collect::<cid::Result<C>>()?;
         Ok(res)
     }
     pub fn gc(&mut self, grace_atime: i64) -> anyhow::Result<Option<i64>> {
+        let t0 = Instant::now();
         let res = self.inner.gc(grace_atime)?;
+        println!("determining ids to delete {}", (Instant::now() - t0).as_secs_f64());
         while self.inner.count_orphaned()? > 0 {
+            let t0 = Instant::now();
             self.inner.delete_orphaned()?;
+            println!("deleting 10000 blocks {}", (Instant::now() - t0).as_secs_f64());
         }
         Ok(res)
     }
