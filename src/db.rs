@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS atime (
       ON DELETE CASCADE
 );
 
-CREATE INDEX idx_atime_block_id
+CREATE INDEX IF NOT EXISTS idx_atime_block_id
 ON atime (block_id);
 
 CREATE TABLE IF NOT EXISTS aliases (
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS aliases (
       ON DELETE CASCADE
 );
 
-CREATE INDEX idx_aliases_block_id
+CREATE INDEX IF NOT EXISTS idx_aliases_block_id
 ON aliases (block_id);
 "#;
 
