@@ -80,7 +80,7 @@ fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<CidBlock>)> {
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let mut store = Store::open("test.sqlite")?;
-    for i in 0..100 {
+    for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
         store.add_blocks(tree_blocks)?;

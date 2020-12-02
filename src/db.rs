@@ -99,11 +99,41 @@ CREATE TABLE IF NOT EXISTS aliases (
 
 CREATE INDEX IF NOT EXISTS idx_aliases_block_id
 ON aliases (block_id);
+
+CREATE TABLE IF NOT EXISTS temp_aliases (
+    alias INTEGER,
+    block_id INTEGER,
+    UNIQUE(alias,block_id)
+    CONSTRAINT fk_block_id
+      FOREIGN KEY (block_id)
+      REFERENCES cids(id)
+      ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_temp_aliases_block_id
+ON temp_aliases (block_id);
+
+CREATE INDEX IF NOT EXISTS idx_temp_aliases_alias
+ON temp_aliases (alias);
 "#;
 
 pub struct BlockStore<C> {
     conn: Connection,
     _c: PhantomData<C>,
+}
+
+// a handle that contains a temporary alias
+pub struct TempAlias<'a> {
+    id: i64,
+    conn: &'a Connection,
+}
+
+impl<'a> Drop for TempAlias<'a> {
+    fn drop(&mut self) {
+        if let Err(cause) = drop_temp_alias(self.conn, self.id) {
+            error!("unable to drop temp alias {}: {}", self.id, cause);
+        }
+    }
 }
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
@@ -253,11 +283,41 @@ WHERE
     })
 }
 
+fn create_temp_alias(conn: &mut Connection) -> rusqlite::Result<TempAlias> {
+    let txn = conn.transaction()?;
+    // compute a new alias id
+    let temp_alias_id: i64 = txn
+        .prepare_cached("SELECT COALESCE(MAX(alias), 1) + 1 FROM temp_aliases")?
+        .query_row(NO_PARAMS, |row| row.get(0))?;
+    // insert this id with a NULL value to reserve it
+    txn.prepare_cached(
+        r#"
+INSERT INTO temp_aliases
+    (alias, block_id)
+VALUES
+    (?, NULL);
+"#,
+    )?
+    .execute(&[temp_alias_id])?;
+    txn.commit()?;
+    Ok(TempAlias {
+        id: temp_alias_id,
+        conn,
+    })
+}
+
+fn drop_temp_alias(conn: &Connection, alias: i64) -> rusqlite::Result<()> {
+    conn.prepare_cached("DELETE FROM temp_alias WHERE alias = ?")?
+        .execute(&[alias])?;
+    Ok(())
+}
+
 fn add_block<C: ToSql>(
     txn: &Transaction,
     key: &C,
     data: &[u8],
     links: impl IntoIterator<Item = C>,
+    alias: Option<&TempAlias>,
 ) -> rusqlite::Result<bool> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
@@ -265,6 +325,12 @@ fn add_block<C: ToSql>(
         .query_row(&[id], |_| Ok(()))
         .optional()?
         .is_some();
+    // create a temporary alias for the block, even if it already exists
+    if let Some(alias) = alias {
+        let alias_id: i64 = alias.id;
+        txn.prepare_cached("INSERT OR IGNORE INTO temp_aliases (alias, block_id) VALUES (?, ?)")?
+            .execute(&[alias_id, id])?;
+    }
     if !block_exists {
         txn.prepare_cached("INSERT INTO blocks (block_id, block) VALUES (?, ?)")?
             .execute(params![id, &data])?;
@@ -461,7 +527,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         data: &[u8],
         links: impl IntoIterator<Item = C>,
     ) -> rusqlite::Result<bool> {
-        self.in_txn(|txn| Ok(add_block(txn, key, data, links)?))
+        self.in_txn(|txn| Ok(add_block(txn, key, data, links, None)?))
     }
 
     pub fn add_blocks(
@@ -470,7 +536,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     ) -> rusqlite::Result<()> {
         self.in_txn(move |txn| {
             for block in blocks.into_iter() {
-                add_block(txn, &block.cid(), block.data(), block.links())?;
+                add_block(txn, &block.cid(), block.data(), block.links(), None)?;
             }
             Ok(())
         })
@@ -515,6 +581,10 @@ impl<C: ToSql + FromSql> BlockStore<C> {
 
     pub fn count_orphaned(&self) -> rusqlite::Result<u32> {
         self.in_ro_txn(move |txn| Ok(count_orphaned(txn)?))
+    }
+
+    pub fn create_temp_alias(&mut self) -> rusqlite::Result<TempAlias> {
+        create_temp_alias(&mut self.conn)
     }
 
     /// execute a statement in a write transaction
