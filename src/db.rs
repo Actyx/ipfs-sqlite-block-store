@@ -14,8 +14,55 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
-use std::{collections::BTreeSet, marker::PhantomData, path::Path};
+use std::{collections::BTreeSet, marker::PhantomData, path::Path, time::Duration};
 use std::{convert::TryFrom, time::Instant};
+use tracing::*;
+
+macro_rules! log {
+    ($level:expr, $text:literal) => {
+        match $level {
+            tracing::Level::TRACE => tracing::trace!($text),
+            tracing::Level::DEBUG => tracing::debug!($text),
+            tracing::Level::INFO => tracing::info!($text),
+            tracing::Level::WARN => tracing::warn!($text),
+            tracing::Level::ERROR => tracing::error!($text),
+        }
+    };
+    ($level:expr, $text:literal, $($args:expr),+) => {
+        match $level {
+            tracing::Level::TRACE => tracing::trace!($text, $($args),+),
+            tracing::Level::DEBUG => tracing::debug!($text, $($args),+),
+            tracing::Level::INFO => tracing::info!($text, $($args),+),
+            tracing::Level::WARN => tracing::warn!($text, $($args),+),
+            tracing::Level::ERROR => tracing::error!($text, $($args),+),
+        }
+    };
+}
+
+/// helper to log execution time of a block of code that returns a result
+///
+/// will log at info level if `expected_duration` is exceeded,
+/// at warn level if the result is a failure, and
+/// just at debug level if the operation is quick and successful.
+///
+/// this is an attempt to avoid spamming the log with lots of irrelevant info.
+fn log_execution_time<T, E>(
+    msg: &str,
+    expected_duration: Duration,
+    f: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    let t0 = Instant::now();
+    let result = (f)();
+    let dt = t0.elapsed();
+    if result.is_err() {
+        warn!("{} took {}us and failed", msg, dt.as_micros());
+    } else if dt > expected_duration {
+        info!("{} took {}us", msg, dt.as_micros());
+    } else {
+        debug!("{} took {}us", msg, dt.as_micros());
+    };
+    result
+}
 
 const INIT: &'static str = r#"
 PRAGMA foreign_keys = ON;
@@ -178,7 +225,12 @@ WHERE
     Ok(())
 }
 
-fn perform_gc_2(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
+fn perform_gc_2(
+    txn: &Transaction,
+    grace_atime: i64,
+    min_blocks: usize,
+    max_duration: Duration,
+) -> rusqlite::Result<()> {
     // find all ids that have neither a parent nor are aliased
     let mut id_query = txn.prepare_cached(
         r#"
@@ -198,19 +250,22 @@ WHERE
     (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
         "#,
     )?;
-    let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
+    // measure the time from the start.
+    // min_blocks will ensure that we get some work done even if the id query takes too long
     let t0 = Instant::now();
-    let mut rows = id_query.query(&[grace_atime])?;
-    let mut ids: Vec<i64> = Vec::new();
-    while let Some(row) = rows.next()? {
-        ids.push(row.get(0)?);
-    }
-    let dt = t0.elapsed();
-    println!("figuring out the ids to delete took {}", dt.as_secs_f64());
+    // log execution time of the non-interruptible query that computes the set of ids to delete
+    let ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
+        id_query
+            .query(&[grace_atime])?
+            .mapped(|row| row.get(0))
+            .collect::<rusqlite::Result<Vec<i64>>>()
+    })?;
+    let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     for (i, id) in ids.iter().enumerate() {
-        if i % 10000 == 0 {
-            println!("deleted 10000 blocks {}", i);
+        if i > min_blocks && t0.elapsed() > max_duration {
+            break;
         }
+        trace!("deleting id {}", id);
         delete_stmt.execute(&[id])?;
     }
     Ok(())
@@ -230,16 +285,18 @@ WHERE
 }
 
 fn delete_orphaned(txn: &Transaction) -> rusqlite::Result<()> {
-    txn.prepare_cached(
-        r#"
+    log_execution_time("delete_orphaned", Duration::from_secs(1), || {
+        txn.prepare_cached(
+            r#"
 DELETE FROM
     blocks
 WHERE
     block_id NOT IN (SELECT id FROM cids) LIMIT 10000;
         "#,
-    )?
-    .execute(NO_PARAMS)?;
-    Ok(())
+        )?
+        .execute(NO_PARAMS)?;
+        Ok(())
+    })
 }
 
 fn add_block<C: ToSql>(
@@ -338,9 +395,9 @@ SELECT DISTINCT id FROM ancestor_of;
 /// This just uses the refs table, so it does not ensure that we actually have data for each cid.
 /// The value itself is included.
 fn get_descendants<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
-    let mut res = Vec::<C>::new();
-    let mut stmt = txn.prepare_cached(
-        r#"
+    let res = txn
+        .prepare_cached(
+            r#"
 WITH RECURSIVE
     descendant_of(id) AS
     (
@@ -354,11 +411,10 @@ WITH RECURSIVE
     -- retrieve corresponding cids - this is a set because of select distinct
     SELECT cid from cids,descendant_ids WHERE cids.id = descendant_ids.id;
 "#,
-    )?;
-    let mut rows = stmt.query(&[cid])?;
-    while let Some(row) = rows.next()? {
-        res.push(row.get(0)?);
-    }
+        )?
+        .query(&[cid])?
+        .mapped(|row| row.get(0))
+        .collect::<rusqlite::Result<Vec<C>>>()?;
     Ok(res)
 }
 
@@ -367,7 +423,7 @@ WITH RECURSIVE
 /// It is safe to call this method for a cid we don't have yet.
 fn get_missing_blocks<C: ToSql + FromSql>(txn: &Transaction, cid: C) -> rusqlite::Result<Vec<C>> {
     let id = get_or_create_id(&txn, cid)?;
-    let mut stmt = txn.prepare_cached(
+    let res = txn.prepare_cached(
         r#"
 WITH     RECURSIVE
     -- find descendants of cid, including the id of the cid itself
@@ -383,23 +439,19 @@ WITH     RECURSIVE
     -- retrieve corresponding cids - this is a set because of select distinct
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
-    )?;
-    let mut res = Vec::new();
-    let mut rows = stmt.query(&[id])?;
-    while let Some(row) = rows.next()? {
-        res.push(row.get(0)?);
-    }
+    )?
+        .query(&[id])?
+        .mapped(|row| row.get(0))
+        .collect::<rusqlite::Result<Vec<C>>>()?;
     Ok(res)
 }
 
 fn get_cids<C: FromSql>(txn: &Transaction) -> rusqlite::Result<Vec<C>> {
-    let mut stmt = txn.prepare_cached(r#"SELECT cid FROM cids"#)?;
-    let mut rows = stmt.query(NO_PARAMS)?;
-    let mut res = Vec::new();
-    while let Some(row) = rows.next()? {
-        res.push(row.get(0)?);
-    }
-    Ok(res)
+    Ok(txn
+        .prepare_cached(r#"SELECT cid FROM cids"#)?
+        .query(NO_PARAMS)?
+        .mapped(|row| row.get(0))
+        .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
 fn init_db(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -482,20 +534,26 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     }
 
     pub fn gc(&mut self, grace_atime: i64) -> rusqlite::Result<Option<i64>> {
-        self.in_txn(move |txn| {
-            perform_gc_2(&txn, grace_atime)?;
-            Ok(get_current_atime(txn)?)
+        log_execution_time("gc", Duration::from_secs(1), || {
+            self.in_txn(move |txn| {
+                perform_gc_2(&txn, grace_atime, 10000, Duration::from_secs(1))?;
+                Ok(get_current_atime(txn)?)
+            })
         })
     }
 
     pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
-        self.in_txn(move |txn| Ok(delete_orphaned(txn)?))
+        log_execution_time("delete_orphaned", Duration::from_secs(1), || {
+            self.in_txn(move |txn| Ok(delete_orphaned(txn)?))
+        })
     }
 
     pub fn get_missing_blocks(&self, cid: C) -> rusqlite::Result<Vec<C>> {
-        self.in_ro_txn(move |txn| {
-            let result = get_missing_blocks(txn, cid)?;
-            Ok(result)
+        log_execution_time("get_missing_blocks", Duration::from_millis(10), || {
+            self.in_ro_txn(move |txn| {
+                let result = get_missing_blocks(txn, cid)?;
+                Ok(result)
+            })
         })
     }
 

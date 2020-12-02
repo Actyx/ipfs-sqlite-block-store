@@ -5,6 +5,8 @@ use sqlite_block_store::BlockStore;
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::path::Path;
+use tracing::*;
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 pub fn query_roots(path: &Path) -> anyhow::Result<Vec<(String, Cid)>> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -29,14 +31,17 @@ pub struct OldBlock {
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_span_events(FmtSpan::CLOSE)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() < 2 {
         println!("Usage: import <block store sql> <index sql>");
-        anyhow::bail!("");
-    } else {
-        println!("opening roots db {}", args[0]);
-        println!("opening blocks db {}", args[1]);
+        std::process::exit(1);
     }
+    info!("opening roots db {}", args[0]);
+    info!("opening blocks db {}", args[1]);
     let roots = Path::new(&args[1]);
     let blocks = Path::new(&args[2]);
     let output = Path::new("out.sqlite");
@@ -44,7 +49,7 @@ fn main() -> anyhow::Result<()> {
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", params![], |row| row.get(0))?;
-    println!("{} blocks", len);
+    info!("importing {} blocks", len);
 
     let mut stmt = blocks.prepare("SELECT * FROM blocks")?;
     let block_iter = stmt.query_map(params![], |row| {
@@ -61,7 +66,7 @@ fn main() -> anyhow::Result<()> {
         let key = Cid::try_from(String::from_utf8(block.key)?)?;
         let cid = Cid::try_from(block.cid)?;
         assert_eq!(key.hash(), cid.hash());
-        println!("key {} {}", key, i);
+        info!("key {} {}", key, i);
         //println!("{} {} {}", cid, block.pinned, block.data.len());
         let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
         let mut set = HashSet::new();
@@ -76,38 +81,40 @@ fn main() -> anyhow::Result<()> {
     }
 
     for (alias, cid) in query_roots(roots)?.into_iter() {
-        println!("aliasing {} to {}", alias, cid);
+        info!("aliasing {} to {}", alias, cid);
         let now = std::time::Instant::now();
         store.alias(alias.as_bytes(), Some(&cid.to_bytes()))?;
-        println!("{}ms", now.elapsed().as_millis());
+        info!("{}ms", now.elapsed().as_millis());
         let missing = store.get_missing_blocks(cid.to_bytes())?;
-        println!("{} blocks missing", missing.len());
+        info!("{} blocks missing", missing.len());
     }
+
+    store.gc(1000000)?;
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
     for (i, cid) in store.get_cids()?.iter().enumerate() {
         if i % 1000 == 0 {
-            println!("{} {}", cid.len(), i);
+            info!("{} {}", cid.len(), i);
         }
         len += store.get_block(cid)?.map(|x| x.len()).unwrap_or(0)
     }
     let dt = now.elapsed().as_secs_f64();
-    println!("iterating over all blocks: {}s", dt);
-    println!("len = {}", len);
-    println!("rate = {} bytes/s", (len as f64) / dt);
+    info!("iterating over all blocks: {}s", dt);
+    info!("len = {}", len);
+    info!("rate = {} bytes/s", (len as f64) / dt);
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
     for (i, cid) in store.get_cids()?.iter().enumerate() {
         if i % 1000 == 0 {
-            println!("{} {}", cid.len(), i);
+            info!("{} {}", cid.len(), i);
         }
         len += store.get_block(cid)?.map(|x| x.len()).unwrap_or(0)
     }
     let dt = now.elapsed().as_secs_f64();
-    println!("iterating over all blocks: {}s", dt);
-    println!("len = {}", len);
-    println!("rate = {} bytes/s", (len as f64) / dt);
+    info!("iterating over all blocks: {}s", dt);
+    info!("len = {}", len);
+    info!("rate = {} bytes/s", (len as f64) / dt);
     Ok(())
 }
