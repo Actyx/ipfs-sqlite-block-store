@@ -19,7 +19,7 @@ fn insert_get() -> anyhow::Result<()> {
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
-    store.add_block(&a, b"abcd", vec![b, c])?;
+    store.add_block(&a, b"abcd", vec![b, c], None)?;
     // we should have all three cids
     assert!(store.has_cid(&a)?);
     assert!(store.has_cid(&b)?);
@@ -57,9 +57,9 @@ fn incremental_insert() -> anyhow::Result<()> {
     // alias before even adding the block
     store.alias(b"alias1", Some(&a))?;
     assert!(store.has_cid(&a)?);
-    store.add_block(&a, b"abcd", vec![b, c])?;
+    store.add_block(&a, b"abcd", vec![b, c], None)?;
     store.gc()?;
-    store.add_block(&c, b"fubar", vec![d, e])?;
+    store.add_block(&c, b"fubar", vec![d, e], None)?;
     store.gc()?;
     // we should have all five cids
     assert!(store.has_cid(&a)?);
@@ -88,5 +88,28 @@ fn incremental_insert() -> anyhow::Result<()> {
     store.gc()?;
     assert!(!store.has_block(&a)?);
     assert!(store.has_block(&c)?);
+    Ok(())
+}
+
+#[test]
+fn temp_alias() -> anyhow::Result<()> {
+    let mut store = Store::memory()?;
+    let a = cid("a");
+    let b = cid("b");
+    let alias = store.temp_alias()?;
+
+    store.add_block(&a, b"abcd", vec![], Some(&alias))?;
+    store.gc()?;
+    assert!(store.has_block(&a)?);
+
+    store.add_block(&b, b"fubar", vec![], Some(&alias))?;
+    store.gc()?;
+    assert!(store.has_block(&b)?);
+
+    drop(alias);
+    store.gc()?;
+    assert!(!store.has_block(&a)?);
+    assert!(!store.has_block(&b)?);
+
     Ok(())
 }

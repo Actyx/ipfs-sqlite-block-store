@@ -4,18 +4,6 @@ use libipld::cid::Cid;
 use multihash::{Code, MultihashDigest};
 use sqlite_block_store::{Block, CidBlock, Store};
 
-pub struct VecBlock {
-    cid: Vec<u8>,
-    data: Vec<u8>,
-    links: Vec<Vec<u8>>,
-}
-
-impl VecBlock {
-    fn new(cid: Vec<u8>, data: Vec<u8>, links: Vec<Vec<u8>>) -> Self {
-        Self { cid, data, links }
-    }
-}
-
 fn cid(name: &str) -> Cid {
     let hash = Code::Sha2_256.digest(name.as_bytes());
     Cid::new_v1(0x71, hash)
@@ -83,7 +71,7 @@ fn main() -> anyhow::Result<()> {
     for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
-        store.add_blocks(tree_blocks)?;
+        store.add_blocks(tree_blocks, None)?;
         if i % 2 == 0 {
             store.alias(&format!("tree-alias-{}", i).as_bytes(), Some(&tree_root))?;
         }
@@ -96,8 +84,8 @@ fn main() -> anyhow::Result<()> {
     // for block in tree_blocks {
     //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
     // }
-    store.add_blocks(tree_blocks)?;
-    store.add_blocks(list_blocks)?;
+    store.add_blocks(tree_blocks, None)?;
+    store.add_blocks(list_blocks, None)?;
     println!(
         "descendants of {:?} {:?}",
         tree_root,
@@ -108,15 +96,15 @@ fn main() -> anyhow::Result<()> {
     //     list_root,
     //     store.get_descendants(list_root.as_ref())
     // );
-    store.add_block(&cid("a"), b"adata", vec![cid("b"), cid("c")])?;
+    store.add_block(&cid("a"), b"adata", vec![cid("b"), cid("c")], None)?;
     println!(
         "{:?}",
         fmt_cids(store.get_missing_blocks::<Vec<_>>(&cid("a"))?)
     );
-    store.add_block(&cid("b"), b"bdata", vec![])?;
-    store.add_block(&cid("c"), b"cdata", vec![])?;
+    store.add_block(&cid("b"), b"bdata", vec![], None)?;
+    store.add_block(&cid("c"), b"cdata", vec![], None)?;
     println!("{:?}", fmt_cids(store.get_descendants(&cid("a"))?));
-    store.add_block(&cid("d"), b"ddata", vec![cid("b"), cid("c")])?;
+    store.add_block(&cid("d"), b"ddata", vec![cid("b"), cid("c")], None)?;
 
     store.alias(b"source1", Some(&cid("a")))?;
     store.alias(b"source2", Some(&cid("d")))?;

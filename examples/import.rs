@@ -77,6 +77,7 @@ fn main() -> anyhow::Result<()> {
             set.into_iter()
                 .map(|cid| cid.to_bytes())
                 .collect::<Vec<_>>(),
+            None,
         )?;
     }
 

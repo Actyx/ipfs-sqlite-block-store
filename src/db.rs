@@ -13,7 +13,18 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
-use std::{collections::BTreeSet, marker::PhantomData, path::Path, time::Duration};
+use std::ops::DerefMut;
+use std::{
+    collections::BTreeSet,
+    collections::VecDeque,
+    marker::PhantomData,
+    path::Path,
+    sync::atomic::AtomicI64,
+    sync::atomic::AtomicU64,
+    sync::Mutex,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 use std::{convert::TryFrom, time::Instant};
 use tracing::*;
 
@@ -119,21 +130,25 @@ ON temp_aliases (alias);
 
 pub struct BlockStore<C> {
     conn: Connection,
+    expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
     _c: PhantomData<C>,
 }
 
 /// a handle that contains a temporary alias
 ///
 /// dropping this handle will drop the alias
-pub struct TempAlias<'a> {
-    id: i64,
-    conn: &'a Connection,
+pub struct TempAlias {
+    id: AtomicI64,
+    expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
 }
 
-impl<'a> Drop for TempAlias<'a> {
+impl Drop for TempAlias {
     fn drop(&mut self) {
-        if let Err(cause) = drop_temp_alias(self.conn, self.id) {
-            error!("unable to drop temp alias {}: {}", self.id, cause);
+        let id = self.id.get_mut();
+        let alias = *id;
+        if alias > 0 {
+            *id = 0;
+            self.expired_temp_aliases.lock().unwrap().push(alias);
         }
     }
 }
@@ -235,36 +250,13 @@ WHERE
     })
 }
 
-fn create_temp_alias(conn: &mut Connection) -> rusqlite::Result<TempAlias> {
-    let txn = conn.transaction()?;
-    // compute a new alias id
-    let temp_alias_id: i64 = txn
-        .prepare_cached("SELECT COALESCE(MAX(alias), 1) + 1 FROM temp_aliases")?
-        .query_row(NO_PARAMS, |row| row.get(0))?;
-    // insert this id with a NULL value to reserve it
-    txn.prepare_cached(
-        r#"
-INSERT INTO temp_aliases
-    (alias, block_id)
-VALUES
-    (?, NULL);
-"#,
-    )?
-    .execute(&[temp_alias_id])?;
-    txn.commit()?;
-    Ok(TempAlias {
-        id: temp_alias_id,
-        conn,
-    })
-}
-
-fn drop_temp_alias(conn: &Connection, alias: i64) -> rusqlite::Result<()> {
-    conn.prepare_cached("DELETE FROM temp_alias WHERE alias = ?")?
+fn delete_temp_alias(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
+    txn.prepare_cached("DELETE FROM temp_aliases WHERE alias = ?")?
         .execute(&[alias])?;
     Ok(())
 }
 
-fn add_block<C: ToSql>(
+pub(crate) fn add_block<C: ToSql>(
     txn: &Transaction,
     key: &C,
     data: &[u8],
@@ -279,9 +271,22 @@ fn add_block<C: ToSql>(
         .is_some();
     // create a temporary alias for the block, even if it already exists
     if let Some(alias) = alias {
-        let alias_id: i64 = alias.id;
-        txn.prepare_cached("INSERT OR IGNORE INTO temp_aliases (alias, block_id) VALUES (?, ?)")?
+        let alias_id = alias.id.load(Ordering::SeqCst);
+        if alias_id > 0 {
+            txn.prepare_cached(
+                "INSERT OR IGNORE INTO temp_aliases (alias, block_id) VALUES (?, ?)",
+            )?
             .execute(&[alias_id, id])?;
+        } else {
+            // since we are not using an autoincrement column, this will reuse ids.
+            // I think this is safe, but is it really? deserves some thought.
+            let alias_id: i64 = txn
+                .prepare_cached("SELECT COALESCE(MAX(alias), 1) + 1 FROM temp_aliases")?
+                .query_row(NO_PARAMS, |row| row.get(0))?;
+            txn.prepare_cached("INSERT INTO temp_aliases (alias, block_id) VALUES (?, ?)")?
+                .execute(&[alias_id, id])?;
+            alias.id.store(alias_id, Ordering::SeqCst);
+        }
     }
     if !block_exists {
         txn.prepare_cached("INSERT INTO blocks (block_id, block) VALUES (?, ?)")?
@@ -421,6 +426,30 @@ fn init_db(conn: &mut Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// execute a statement in a write transaction
+pub(crate) fn in_txn<T>(
+    conn: &mut Connection,
+    f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    let txn = conn.transaction()?;
+    let result = f(&txn);
+    if result.is_ok() {
+        txn.commit()?;
+    }
+    result
+}
+
+/// execute a statement in a readonly transaction
+/// nested transactions are not allowed here.
+pub(crate) fn in_ro_txn<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    let txn = conn.unchecked_transaction()?;
+    let result = f(&txn);
+    result
+}
+
 pub trait Block<C> {
     type I: Iterator<Item = C>;
     fn cid(&self) -> C;
@@ -434,6 +463,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         init_db(&mut conn)?;
         Ok(Self {
             conn,
+            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
             _c: PhantomData,
         })
     }
@@ -443,12 +473,13 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         init_db(&mut conn)?;
         Ok(Self {
             conn,
+            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
             _c: PhantomData,
         })
     }
 
     pub fn alias(&mut self, name: &[u8], key: Option<&C>) -> rusqlite::Result<()> {
-        self.in_txn(|txn| {
+        in_txn(&mut self.conn, |txn| {
             if let Some(key) = key {
                 let id = get_or_create_id(txn, key)?;
                 txn.prepare_cached("REPLACE INTO aliases (name, block_id) VALUES (?, ?)")?
@@ -462,15 +493,15 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     }
 
     pub fn get_block(&self, key: &C) -> rusqlite::Result<Option<Vec<u8>>> {
-        self.in_ro_txn(|txn| Ok(get_block(txn, key)?))
+        in_ro_txn(&self.conn, |txn| Ok(get_block(txn, key)?))
     }
 
     pub fn has_block(&self, key: &C) -> rusqlite::Result<bool> {
-        self.in_ro_txn(|txn| Ok(has_block(txn, key)?))
+        in_ro_txn(&self.conn, |txn| Ok(has_block(txn, key)?))
     }
 
     pub fn has_cid(&self, key: &C) -> rusqlite::Result<bool> {
-        self.in_ro_txn(|txn| Ok(has_cid(txn, key)?))
+        in_ro_txn(&self.conn, |txn| Ok(has_cid(txn, key)?))
     }
 
     pub fn add_block(
@@ -478,37 +509,56 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         key: &C,
         data: &[u8],
         links: impl IntoIterator<Item = C>,
+        alias: Option<&TempAlias>,
     ) -> rusqlite::Result<bool> {
-        self.in_txn(|txn| Ok(add_block(txn, key, data, links, None)?))
+        in_txn(&mut self.conn, |txn| {
+            Ok(add_block(txn, key, data, links, alias)?)
+        })
     }
 
     pub fn add_blocks(
         &mut self,
         blocks: impl IntoIterator<Item = impl Block<C>>,
+        alias: Option<&TempAlias>,
     ) -> rusqlite::Result<()> {
-        self.in_txn(move |txn| {
+        in_txn(&mut self.conn, move |txn| {
             for block in blocks.into_iter() {
-                add_block(txn, &block.cid(), block.data(), block.links(), None)?;
+                add_block(txn, &block.cid(), block.data(), block.links(), alias)?;
             }
             Ok(())
         })
     }
 
     pub fn gc(&mut self) -> rusqlite::Result<()> {
+        // atomically grab the expired_temp_aliases until now
+        let expired_temp_aliases = {
+            let mut result = Vec::new();
+            std::mem::swap(
+                self.expired_temp_aliases.lock().unwrap().deref_mut(),
+                &mut result,
+            );
+            result
+        };
         log_execution_time("gc", Duration::from_secs(1), || {
-            self.in_txn(move |txn| incremental_gc(&txn, 10000, Duration::from_secs(1)))
+            in_txn(&mut self.conn, move |txn| {
+                // get rid of dropped temp aliases, this should be fast
+                for id in expired_temp_aliases {
+                    delete_temp_alias(txn, id)?;
+                }
+                incremental_gc(&txn, 10000, Duration::from_secs(1))
+            })
         })
     }
 
     pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
         log_execution_time("delete_orphaned", Duration::from_secs(1), || {
-            self.in_txn(move |txn| Ok(delete_orphaned(txn)?))
+            in_txn(&mut self.conn, move |txn| Ok(delete_orphaned(txn)?))
         })
     }
 
     pub fn get_missing_blocks(&self, cid: C) -> rusqlite::Result<Vec<C>> {
         log_execution_time("get_missing_blocks", Duration::from_millis(10), || {
-            self.in_ro_txn(move |txn| {
+            in_ro_txn(&self.conn, move |txn| {
                 let result = get_missing_blocks(txn, cid)?;
                 Ok(result)
             })
@@ -516,50 +566,29 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     }
 
     pub fn get_descendants(&self, cid: C) -> rusqlite::Result<Vec<C>> {
-        self.in_ro_txn(move |txn| Ok(get_descendants(txn, cid)?))
+        in_ro_txn(&self.conn, move |txn| Ok(get_descendants(txn, cid)?))
     }
 
     pub fn get_block_count(&self) -> rusqlite::Result<u64> {
-        Ok(u64::try_from(self.in_ro_txn(move |txn| get_block_count(txn))?).unwrap())
+        Ok(u64::try_from(in_ro_txn(&self.conn, move |txn| get_block_count(txn))?).unwrap())
     }
 
     pub fn get_block_size(&self) -> rusqlite::Result<u64> {
-        Ok(u64::try_from(self.in_ro_txn(move |txn| get_block_size(txn))?).unwrap())
+        Ok(u64::try_from(in_ro_txn(&self.conn, move |txn| get_block_size(txn))?).unwrap())
     }
 
     pub fn get_cids(&self) -> rusqlite::Result<Vec<C>> {
-        self.in_ro_txn(|txn| get_cids(txn))
+        in_ro_txn(&self.conn, |txn| get_cids(txn))
     }
 
     pub fn count_orphaned(&self) -> rusqlite::Result<u32> {
-        self.in_ro_txn(move |txn| Ok(count_orphaned(txn)?))
+        in_ro_txn(&self.conn, move |txn| Ok(count_orphaned(txn)?))
     }
 
-    pub fn create_temp_alias(&mut self) -> rusqlite::Result<TempAlias> {
-        create_temp_alias(&mut self.conn)
-    }
-
-    /// execute a statement in a write transaction
-    fn in_txn<T>(
-        &mut self,
-        f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
-    ) -> rusqlite::Result<T> {
-        let txn = self.conn.transaction()?;
-        let result = f(&txn);
-        if result.is_ok() {
-            txn.commit()?;
-        }
-        result
-    }
-
-    /// execute a statement in a readonly transaction
-    /// nested transactions are not allowed here.
-    fn in_ro_txn<T>(
-        &self,
-        f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
-    ) -> rusqlite::Result<T> {
-        let txn = self.conn.unchecked_transaction()?;
-        let result = f(&txn);
-        result
+    pub fn create_temp_alias(&self) -> rusqlite::Result<TempAlias> {
+        Ok(TempAlias {
+            id: AtomicI64::new(0),
+            expired_temp_aliases: self.expired_temp_aliases.clone(),
+        })
     }
 }
