@@ -122,7 +122,9 @@ pub struct BlockStore<C> {
     _c: PhantomData<C>,
 }
 
-// a handle that contains a temporary alias
+/// a handle that contains a temporary alias
+///
+/// dropping this handle will drop the alias
 pub struct TempAlias<'a> {
     id: i64,
     conn: &'a Connection,
@@ -222,10 +224,8 @@ fn perform_gc_2(
 WITH RECURSIVE
     descendant_of(id) AS
     (
-        -- non recursive part - simply look up the immediate children
-        SELECT block_id FROM aliases
+        SELECT block_id FROM aliases UNION SELECT block_id FROM temp_aliases WHERE block_id IS NOT NULL
         UNION ALL
-        -- recursive part - look up parents of all returned ids
         SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
     )
 SELECT id FROM
