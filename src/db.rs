@@ -165,55 +165,7 @@ fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64>
     })
 }
 
-fn perform_gc_old(txn: &Transaction) -> rusqlite::Result<()> {
-    // delete all ids that have neither a parent nor are aliased
-    loop {
-        let rows = txn
-            .prepare_cached(
-                r#"
-    DELETE FROM
-        cids
-    WHERE
-        (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id)) AND
-        (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id))
-        LIMIT 10000;
-"#,
-            )?
-            .execute(NO_PARAMS)?;
-        println!("collected {} rows", rows);
-        let cids: i64 = txn.query_row("SELECT COUNT(*) FROM cids", NO_PARAMS, |row| row.get(0))?;
-        println!("remaining {}", cids);
-        if rows == 0 {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn perform_gc(txn: &Transaction) -> rusqlite::Result<()> {
-    // delete all ids that have neither a parent nor are aliased
-    txn.prepare_cached(
-        r#"
-WITH RECURSIVE
-    descendant_of(id) AS
-    (
-        -- non recursive part - simply look up the immediate children
-        SELECT block_id FROM aliases
-        UNION ALL
-        -- recursive part - look up parents of all returned ids
-        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
-    )
-DELETE FROM
-    cids
-WHERE
-    id NOT IN (SELECT id FROM descendant_of);
-        "#,
-    )?
-    .execute(NO_PARAMS)?;
-    Ok(())
-}
-
-fn perform_gc_2(
+fn incremental_gc(
     txn: &Transaction,
     min_blocks: usize,
     max_duration: Duration,
@@ -544,7 +496,7 @@ impl<C: ToSql + FromSql> BlockStore<C> {
 
     pub fn gc(&mut self) -> rusqlite::Result<()> {
         log_execution_time("gc", Duration::from_secs(1), || {
-            self.in_txn(move |txn| perform_gc_2(&txn, 10000, Duration::from_secs(1)))
+            self.in_txn(move |txn| incremental_gc(&txn, 10000, Duration::from_secs(1)))
         })
     }
 
