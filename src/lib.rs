@@ -140,9 +140,9 @@ impl Store {
             .collect::<cid::Result<C>>()?;
         Ok(res)
     }
-    pub fn gc(&mut self, grace_atime: i64) -> Result<Option<i64>> {
+    pub fn gc(&mut self) -> Result<()> {
         let t0 = Instant::now();
-        let res = self.inner.gc(grace_atime)?;
+        self.inner.gc()?;
         println!(
             "deleting ids and most metadata {}",
             (Instant::now() - t0).as_secs_f64()
@@ -155,7 +155,7 @@ impl Store {
                 (Instant::now() - t0).as_secs_f64()
             );
         }
-        Ok(res)
+        Ok(())
     }
     pub fn add_blocks(&mut self, blocks: impl IntoIterator<Item = CidBlock>) -> Result<()> {
         let blocks = blocks

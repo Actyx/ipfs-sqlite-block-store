@@ -6,7 +6,6 @@
 //! refs: m:n mapping from block ids to their children
 //! blocks: the actual data for blocks, keyed by block id
 //!    cids can exist in the system without having data associated with them!
-//! atime: table for a monotonic index that tracks block access time, for the gc grace period mechanism
 //! alias: table that contains named pins for roots of graphs that should not be deleted by gc
 //!    you can alias incomplete or in fact non-existing data. It is not necessary for a pinned dag
 //!    to be complete.
@@ -17,27 +16,6 @@ use rusqlite::{
 use std::{collections::BTreeSet, marker::PhantomData, path::Path, time::Duration};
 use std::{convert::TryFrom, time::Instant};
 use tracing::*;
-
-macro_rules! log {
-    ($level:expr, $text:literal) => {
-        match $level {
-            tracing::Level::TRACE => tracing::trace!($text),
-            tracing::Level::DEBUG => tracing::debug!($text),
-            tracing::Level::INFO => tracing::info!($text),
-            tracing::Level::WARN => tracing::warn!($text),
-            tracing::Level::ERROR => tracing::error!($text),
-        }
-    };
-    ($level:expr, $text:literal, $($args:expr),+) => {
-        match $level {
-            tracing::Level::TRACE => tracing::trace!($text, $($args),+),
-            tracing::Level::DEBUG => tracing::debug!($text, $($args),+),
-            tracing::Level::INFO => tracing::info!($text, $($args),+),
-            tracing::Level::WARN => tracing::warn!($text, $($args),+),
-            tracing::Level::ERROR => tracing::error!($text, $($args),+),
-        }
-    };
-}
 
 /// helper to log execution time of a block of code that returns a result
 ///
@@ -110,18 +88,6 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE INDEX IF NOT EXISTS idx_blocks_block_id
 ON blocks (block_id);
 
-CREATE TABLE IF NOT EXISTS atime (
-    atime INTEGER PRIMARY KEY AUTOINCREMENT,
-    block_id INTEGER UNIQUE,
-    CONSTRAINT fk_block_id
-      FOREIGN KEY (block_id)
-      REFERENCES cids(id)
-      ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_atime_block_id
-ON atime (block_id);
-
 CREATE TABLE IF NOT EXISTS aliases (
     name blob UNIQUE,
     block_id INTEGER,
@@ -167,15 +133,7 @@ fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64>
     })
 }
 
-fn update_atime(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<()> {
-    if let Some(id) = get_id(txn, cid)? {
-        let mut stmt = txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?;
-        stmt.execute(&[id])?;
-    }
-    Ok(())
-}
-
-fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
+fn perform_gc_old(txn: &Transaction) -> rusqlite::Result<()> {
     // delete all ids that have neither a parent nor are aliased
     loop {
         let rows = txn
@@ -185,12 +143,11 @@ fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
         cids
     WHERE
         (NOT EXISTS(SELECT 1 FROM refs WHERE child_id = id)) AND
-        (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id)) AND
-        (SELECT atime FROM atime WHERE atime.block_id = id) < ?
+        (NOT EXISTS(SELECT 1 FROM aliases WHERE block_id = id))
         LIMIT 10000;
 "#,
             )?
-            .execute(&[grace_atime])?;
+            .execute(NO_PARAMS)?;
         println!("collected {} rows", rows);
         let cids: i64 = txn.query_row("SELECT COUNT(*) FROM cids", NO_PARAMS, |row| row.get(0))?;
         println!("remaining {}", cids);
@@ -201,7 +158,7 @@ fn perform_gc_old(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn perform_gc(txn: &Transaction, grace_atime: i64) -> rusqlite::Result<()> {
+fn perform_gc(txn: &Transaction) -> rusqlite::Result<()> {
     // delete all ids that have neither a parent nor are aliased
     txn.prepare_cached(
         r#"
@@ -217,17 +174,15 @@ WITH RECURSIVE
 DELETE FROM
     cids
 WHERE
-    id NOT IN (SELECT id FROM descendant_of) AND
-    (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
+    id NOT IN (SELECT id FROM descendant_of);
         "#,
     )?
-    .execute(&[grace_atime])?;
+    .execute(NO_PARAMS)?;
     Ok(())
 }
 
 fn perform_gc_2(
     txn: &Transaction,
-    grace_atime: i64,
     min_blocks: usize,
     max_duration: Duration,
 ) -> rusqlite::Result<()> {
@@ -246,8 +201,7 @@ WITH RECURSIVE
 SELECT id FROM
     cids
 WHERE
-    id NOT IN (SELECT id FROM descendant_of) AND
-    (SELECT atime FROM atime WHERE atime.block_id = id) < ?;
+    id NOT IN (SELECT id FROM descendant_of);
         "#,
     )?;
     // measure the time from the start.
@@ -256,7 +210,7 @@ WHERE
     // log execution time of the non-interruptible query that computes the set of ids to delete
     let ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
         id_query
-            .query(&[grace_atime])?
+            .query(NO_PARAMS)?
             .mapped(|row| row.get(0))
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
@@ -322,24 +276,13 @@ fn add_block<C: ToSql>(
             insert_ref.execute(params![id, child_id])?;
         }
     }
-    // update atime
-    txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?
-        .execute(&[id])?;
     Ok(true)
 }
 
-fn get_current_atime(txn: &Transaction) -> rusqlite::Result<Option<i64>> {
-    txn.prepare_cached("SELECT seq FROM sqlite_sequence WHERE name='atime'")?
-        .query_row(NO_PARAMS, |row| row.get(0))
-        .optional()
-}
-
-/// Get a block, and update its atime
+/// Get a block
 fn get_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<Vec<u8>>> {
     let id = get_id(&txn, cid)?;
     Ok(if let Some(id) = id {
-        // txn.prepare_cached("REPLACE INTO atime (block_id) VALUES (?)")?
-        //     .execute(&[id])?;
         txn.prepare_cached("SELECT block FROM blocks WHERE block_id = ?")?
             .query_row(&[id], |row| row.get(0))
             .optional()?
@@ -348,7 +291,7 @@ fn get_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<Vec<
     })
 }
 
-/// Check if we have a block, without updating atime.
+/// Check if we have a block
 fn has_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
     Ok(txn
         .prepare_cached(
@@ -359,7 +302,7 @@ fn has_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
         .is_some())
 }
 
-/// Check if we have a cid, without updating atime.
+/// Check if we have a cid
 fn has_cid(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
     Ok(txn
         .prepare_cached("SELECT 1 FROM cids WHERE cids.cid = ?")?
@@ -533,12 +476,9 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn gc(&mut self, grace_atime: i64) -> rusqlite::Result<Option<i64>> {
+    pub fn gc(&mut self) -> rusqlite::Result<()> {
         log_execution_time("gc", Duration::from_secs(1), || {
-            self.in_txn(move |txn| {
-                perform_gc_2(&txn, grace_atime, 10000, Duration::from_secs(1))?;
-                Ok(get_current_atime(txn)?)
-            })
+            self.in_txn(move |txn| perform_gc_2(&txn, 10000, Duration::from_secs(1)))
         })
     }
 

@@ -36,11 +36,11 @@ fn insert_get() -> anyhow::Result<()> {
     assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, c]);
     // alias the root
     store.alias(b"alias1", Some(&a))?;
-    store.gc(1000000)?;
+    store.gc()?;
     // after gc, we shold still have the block
     assert!(store.has_block(&a)?);
     store.alias(b"alias1", None)?;
-    store.gc(1000000)?;
+    store.gc()?;
     // after gc, we shold no longer have the block
     assert!(!store.has_block(&a)?);
     Ok(())
@@ -58,9 +58,9 @@ fn incremental_insert() -> anyhow::Result<()> {
     store.alias(b"alias1", Some(&a))?;
     assert!(store.has_cid(&a)?);
     store.add_block(&a, b"abcd", vec![b, c])?;
-    store.gc(1000000)?;
+    store.gc()?;
     store.add_block(&c, b"fubar", vec![d, e])?;
-    store.gc(1000000)?;
+    store.gc()?;
     // we should have all five cids
     assert!(store.has_cid(&a)?);
     assert!(store.has_cid(&b)?);
@@ -81,11 +81,11 @@ fn incremental_insert() -> anyhow::Result<()> {
     assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, d, e]);
     // alias the root
     store.alias(b"alias1", Some(&a))?;
-    store.gc(1000000)?;
+    store.gc()?;
     // after gc, we shold still have the block
     assert!(store.has_block(&a)?);
     store.alias(b"alias1", Some(&c))?;
-    store.gc(1000000)?;
+    store.gc()?;
     assert!(!store.has_block(&a)?);
     assert!(store.has_block(&c)?);
     Ok(())

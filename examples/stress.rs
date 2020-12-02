@@ -122,7 +122,7 @@ fn main() -> anyhow::Result<()> {
     store.alias(b"source2", Some(&cid("d")))?;
     println!("starting gc");
     let t0 = Instant::now();
-    store.gc(100000000)?;
+    store.gc()?;
     let dt = Instant::now() - t0;
     println!("{}", dt.as_secs_f64());
     // let atime = store.gc(100000)?;
