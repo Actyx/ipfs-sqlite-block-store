@@ -13,6 +13,7 @@ use std::{
     convert::{TryFrom, TryInto},
     iter::FromIterator,
     path::Path,
+    time::Duration,
     time::Instant,
 };
 
@@ -145,21 +146,26 @@ impl Store {
         Ok(res)
     }
     pub fn gc(&mut self) -> Result<()> {
-        let t0 = Instant::now();
-        self.inner.gc()?;
-        println!(
-            "deleting ids and most metadata {}",
-            (Instant::now() - t0).as_secs_f64()
-        );
-        while self.inner.count_orphaned()? > 0 {
-            let t0 = Instant::now();
-            self.inner.delete_orphaned()?;
-            println!(
-                "deleting 10000 blocks {}",
-                (Instant::now() - t0).as_secs_f64()
-            );
+        loop {
+            let complete = self.incremental_gc(20000, Duration::from_secs(1))?;
+            while !self.incremental_delete_orphaned(20000, Duration::from_secs(1))? {}
+            if complete {
+                break;
+            }
         }
         Ok(())
+    }
+    pub fn incremental_gc(&mut self, min_blocks: usize, max_duration: Duration) -> Result<bool> {
+        Ok(self.inner.incremental_gc(min_blocks, max_duration)?)
+    }
+    pub fn incremental_delete_orphaned(
+        &mut self,
+        min_blocks: usize,
+        max_duration: Duration,
+    ) -> Result<bool> {
+        Ok(self
+            .inner
+            .incremental_delete_orphaned(min_blocks, max_duration)?)
     }
     pub fn add_blocks(
         &mut self,

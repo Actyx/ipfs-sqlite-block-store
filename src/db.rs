@@ -14,17 +14,19 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
-use std::ops::DerefMut;
 use std::{
     collections::BTreeSet,
+    convert::TryFrom,
     marker::PhantomData,
+    ops::DerefMut,
     path::Path,
-    sync::atomic::AtomicI64,
-    sync::Mutex,
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
+    time::Instant,
 };
-use std::{convert::TryFrom, time::Instant};
 use tracing::*;
 
 /// helper to log execution time of a block of code that returns a result
@@ -55,8 +57,8 @@ fn log_execution_time<T, E>(
 const INIT: &'static str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
--- PRAGMA synchronous = FULL;
+-- PRAGMA synchronous = NORMAL;
+PRAGMA synchronous = FULL;
 PRAGMA page_size = 4096;
 -- PRAGMA page_size = 8192;
 -- PRAGMA page_size = 16384;
@@ -67,6 +69,9 @@ CREATE TABLE IF NOT EXISTS cids (
     id INTEGER PRIMARY KEY,
     cid BLOB UNIQUE NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_cids_id
+ON cids (id);
 
 CREATE TABLE IF NOT EXISTS refs (
     parent_id INTEGER NOT NULL,
@@ -198,7 +203,7 @@ fn incremental_gc(
     txn: &Transaction,
     min_blocks: usize,
     max_duration: Duration,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<bool> {
     // find all ids that have neither a parent nor are aliased
     let mut id_query = txn.prepare_cached(
         r#"
@@ -227,13 +232,13 @@ WHERE
     })?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     for (i, id) in ids.iter().enumerate() {
-        if i > min_blocks && t0.elapsed() > max_duration {
-            break;
+        if i >= min_blocks && t0.elapsed() > max_duration {
+            return Ok(false);
         }
         trace!("deleting id {}", id);
         delete_stmt.execute(&[id])?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn count_orphaned(txn: &Transaction) -> rusqlite::Result<u32> {
@@ -259,14 +264,14 @@ WHERE
 ///
 /// note that the execution time limit is not entirely accurate, because in many cases the cost of
 /// deleting blocks will only be fully felt when doing the commit of the transaction.
-fn delete_orphaned_incremental(
+fn incremental_delete_orphaned(
     txn: &Transaction,
     min_blocks: usize,
     max_duration: Duration,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<bool> {
     let t0 = Instant::now();
     let ids: Vec<i64> = log_execution_time("determine_orphaned", Duration::from_secs(1), || {
-        txn.prepare_cached("SELECT block_id FROM blocks EXCEPT SELECT id FROM cids")?
+        txn.prepare_cached("SELECT block_id FROM blocks WHERE block_id NOT IN (SELECT id FROM cids)")?
             .query(NO_PARAMS)?
             .mapped(|row| row.get(0))
             .collect::<rusqlite::Result<_>>()
@@ -274,18 +279,18 @@ fn delete_orphaned_incremental(
     let mut delete_stmt = txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?")?;
     for (i, id) in ids.iter().enumerate() {
         let dt = t0.elapsed();
-        if i > min_blocks && dt > max_duration {
+        if i >= min_blocks && dt > max_duration {
             info!(
                 "stopped incremental delete after {}us and {} blocks",
                 dt.as_micros(),
                 i
             );
-            break;
+            return Ok(false);
         }
         trace!("deleting block for id {}", id);
         delete_stmt.execute(&[id])?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn delete_temp_alias(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
@@ -567,7 +572,11 @@ impl<C: ToSql + FromSql> BlockStore<C> {
         })
     }
 
-    pub fn gc(&mut self) -> rusqlite::Result<()> {
+    pub fn incremental_gc(
+        &mut self,
+        min_blocks: usize,
+        max_duration: Duration,
+    ) -> rusqlite::Result<bool> {
         // atomically grab the expired_temp_aliases until now
         let expired_temp_aliases = {
             let mut result = Vec::new();
@@ -583,19 +592,19 @@ impl<C: ToSql + FromSql> BlockStore<C> {
                 for id in expired_temp_aliases {
                     delete_temp_alias(txn, id)?;
                 }
-                incremental_gc(&txn, 10000, Duration::from_secs(1))
+                incremental_gc(&txn, min_blocks, max_duration)
             })
         })
     }
 
-    pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
+    pub fn incremental_delete_orphaned(
+        &mut self,
+        min_blocks: usize,
+        max_duration: Duration,
+    ) -> rusqlite::Result<bool> {
         log_execution_time("delete_orphaned", Duration::from_millis(100), || {
             in_txn(&mut self.conn, move |txn| {
-                Ok(delete_orphaned_incremental(
-                    txn,
-                    10000,
-                    Duration::from_secs(1),
-                )?)
+                Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
             })
         })
     }

@@ -90,7 +90,7 @@ fn main() -> anyhow::Result<()> {
         info!("{} blocks missing", missing.len());
     }
 
-    store.gc()?;
+    // store.gc()?;
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
