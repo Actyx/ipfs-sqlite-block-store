@@ -5,6 +5,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
+use db::{add_block, in_txn, TempAlias};
 pub use db::{Block, BlockStore};
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
@@ -96,11 +97,14 @@ impl Store {
             inner: BlockStore::open(path)?,
         })
     }
+    pub fn temp_alias(&self) -> crate::Result<TempAlias> {
+        Ok(self.inner.create_temp_alias()?)
+    }
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
         let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(x)).transpose()?;
         Ok(self.inner.alias(name.as_ref(), link.as_ref())?)
     }
-    pub fn has_cid(&mut self, cid: &Cid) -> Result<bool> {
+    pub fn has_cid(&self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         Ok(self.inner.has_cid(&cid)?)
     }
@@ -140,9 +144,9 @@ impl Store {
             .collect::<cid::Result<C>>()?;
         Ok(res)
     }
-    pub fn gc(&mut self, grace_atime: i64) -> Result<Option<i64>> {
+    pub fn gc(&mut self) -> Result<()> {
         let t0 = Instant::now();
-        let res = self.inner.gc(grace_atime)?;
+        self.inner.gc()?;
         println!(
             "deleting ids and most metadata {}",
             (Instant::now() - t0).as_secs_f64()
@@ -155,14 +159,18 @@ impl Store {
                 (Instant::now() - t0).as_secs_f64()
             );
         }
-        Ok(res)
+        Ok(())
     }
-    pub fn add_blocks(&mut self, blocks: impl IntoIterator<Item = CidBlock>) -> Result<()> {
+    pub fn add_blocks(
+        &mut self,
+        blocks: impl IntoIterator<Item = CidBlock>,
+        alias: Option<&TempAlias>,
+    ) -> Result<()> {
         let blocks = blocks
             .into_iter()
             .map(CidBytesBlock::try_from)
             .collect::<cid::Result<Vec<_>>>()?;
-        self.inner.add_blocks(blocks)?;
+        self.inner.add_blocks(blocks, alias)?;
         Ok(())
     }
     pub fn add_block(
@@ -170,13 +178,14 @@ impl Store {
         cid: &Cid,
         data: &[u8],
         links: impl IntoIterator<Item = Cid>,
+        alias: Option<&TempAlias>,
     ) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         let links = links
             .into_iter()
             .map(|x| CidBytes::try_from(&x))
             .collect::<cid::Result<Vec<_>>>()?;
-        Ok(self.inner.add_block(&cid, data, links)?)
+        Ok(self.inner.add_block(&cid, data, links, alias)?)
     }
     pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         let cid = CidBytes::try_from(cid)?;
