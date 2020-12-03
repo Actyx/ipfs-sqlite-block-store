@@ -207,14 +207,14 @@ fn incremental_gc(
 WITH RECURSIVE
     descendant_of(id) AS
     (
-        SELECT block_id FROM aliases UNION SELECT block_id FROM temp_aliases WHERE block_id IS NOT NULL
+        SELECT block_id FROM aliases UNION SELECT block_id FROM temp_aliases
         UNION ALL
         SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
     )
 SELECT id FROM
     cids
 WHERE
-    id NOT IN (SELECT id FROM descendant_of);
+    id NOT IN descendant_of;
         "#,
     )?;
     // measure the time from the start.
@@ -251,7 +251,11 @@ WHERE
     Ok(res)
 }
 
-fn delete_orphaned(txn: &Transaction) -> rusqlite::Result<()> {
+fn delete_orphaned(
+    txn: &Transaction,
+    min_blocks: usize,
+    max_duration: Duration,
+) -> rusqlite::Result<()> {
     log_execution_time("delete_orphaned", Duration::from_secs(1), || {
         txn.prepare_cached(
             r#"
@@ -568,7 +572,9 @@ impl<C: ToSql + FromSql> BlockStore<C> {
 
     pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
         log_execution_time("delete_orphaned", Duration::from_secs(1), || {
-            in_txn(&mut self.conn, move |txn| Ok(delete_orphaned(txn)?))
+            in_txn(&mut self.conn, move |txn| {
+                Ok(delete_orphaned(txn, 10000, Duration::from_secs(1))?)
+            })
         })
     }
 
