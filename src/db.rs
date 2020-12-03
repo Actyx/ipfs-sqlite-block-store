@@ -9,6 +9,7 @@
 //! alias: table that contains named pins for roots of graphs that should not be deleted by gc
 //!    you can alias incomplete or in fact non-existing data. It is not necessary for a pinned dag
 //!    to be complete.
+use core::fmt;
 use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
@@ -136,10 +137,24 @@ pub struct BlockStore<C> {
 
 /// a handle that contains a temporary alias
 ///
-/// dropping this handle will drop the alias
+/// dropping this handle enqueue the alias for dropping before the next gc.
+///
+/// Note that implementing Clone for this would be a mistake.
 pub struct TempAlias {
     id: AtomicI64,
     expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
+}
+
+/// dump the temp alias id so you can find it in the database
+impl fmt::Debug for TempAlias {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let id = self.id.load(Ordering::SeqCst);
+        let mut builder = f.debug_struct("TempAlias");
+        if id > 0 {
+            builder.field("id", &id);
+        }
+        builder.finish()
+    }
 }
 
 impl Drop for TempAlias {
@@ -147,6 +162,7 @@ impl Drop for TempAlias {
         let id = self.id.get_mut();
         let alias = *id;
         if alias > 0 {
+            // not sure if we have to guard against double drop, but it certainly does not hurt.
             *id = 0;
             self.expired_temp_aliases.lock().unwrap().push(alias);
         }
