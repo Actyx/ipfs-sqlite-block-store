@@ -5,7 +5,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
-use db::{add_block, in_txn, TempAlias};
+use db::TempAlias;
 pub use db::{Block, BlockStore};
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
@@ -14,7 +14,6 @@ use std::{
     iter::FromIterator,
     path::Path,
     time::Duration,
-    time::Instant,
 };
 
 pub struct Store {

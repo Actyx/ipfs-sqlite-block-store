@@ -1,12 +1,12 @@
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
 use rusqlite::{params, Connection, OpenFlags};
-use sqlite_block_store::BlockStore;
-use std::collections::HashSet;
+use sqlite_block_store::{CidBlock, Store};
 use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+use itertools::*;
 
 pub fn query_roots(path: &Path) -> anyhow::Result<Vec<(String, Cid)>> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -30,6 +30,26 @@ pub struct OldBlock {
     data: Vec<u8>,
 }
 
+pub struct IpldBlock(libipld::Block<DefaultParams>);
+
+impl sqlite_block_store::Block<Cid> for IpldBlock {
+    type I = std::vec::IntoIter<Cid>;
+
+    fn cid(&self) -> Cid {
+        self.0.cid().clone()
+    }
+
+    fn data(&self) -> &[u8] {
+        self.0.data()
+    }
+
+    fn links(&self) -> Self::I {
+        let mut links = Vec::new();
+        self.0.references(&mut links).unwrap();
+        links.into_iter()        
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)
@@ -45,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     let roots = Path::new(&args[1]);
     let blocks = Path::new(&args[2]);
     let output = Path::new("out.sqlite");
-    let mut store = BlockStore::open(output)?;
+    let mut store = Store::open(output)?;
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", params![], |row| row.get(0))?;
@@ -61,42 +81,42 @@ fn main() -> anyhow::Result<()> {
         })
     })?;
 
-    for (i, block) in block_iter.enumerate() {
-        let block = block?;
-        let key = Cid::try_from(String::from_utf8(block.key)?)?;
-        let cid = Cid::try_from(block.cid)?;
-        assert_eq!(key.hash(), cid.hash());
-        info!("key {} {}", key, i);
-        //println!("{} {} {}", cid, block.pinned, block.data.len());
-        let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
-        let mut set = HashSet::new();
-        block.references(&mut set)?;
-        store.add_block(
-            &block.cid().to_bytes(),
-            block.data(),
-            set.into_iter()
-                .map(|cid| cid.to_bytes())
-                .collect::<Vec<_>>(),
-            None,
-        )?;
+    let block_iter = block_iter.map(|block| {
+        block.map_err(|e| anyhow::Error::from(e)).and_then(|block| {
+            let key = Cid::try_from(String::from_utf8(block.key)?)?;
+            let cid = Cid::try_from(block.cid)?;
+            assert_eq!(key.hash(), cid.hash());
+            //println!("{} {} {}", cid, block.pinned, block.data.len());
+            let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
+            let mut refs = Vec::new();
+            block.references(&mut refs)?;
+            let (cid, data) = block.into_inner();
+            Ok(CidBlock::new(cid, data, refs))
+        })
+    });
+
+    for block in &block_iter.chunks(1000) {
+        info!("adding 1000 block chunk");
+        let blocks = block.collect::<anyhow::Result<Vec<_>>>()?;
+        store.add_blocks(blocks, None)?;
     }
 
     for (alias, cid) in query_roots(roots)?.into_iter() {
         info!("aliasing {} to {}", alias, cid);
         let now = std::time::Instant::now();
-        store.alias(alias.as_bytes(), Some(&cid.to_bytes()))?;
+        store.alias(alias.as_bytes(), Some(&cid))?;
         info!("{}ms", now.elapsed().as_millis());
-        let missing = store.get_missing_blocks(cid.to_bytes())?;
+        let missing = store.get_missing_blocks::<Vec<_>>(&cid)?;
         info!("{} blocks missing", missing.len());
     }
 
-    // store.gc()?;
+    store.gc()?;
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
-    for (i, cid) in store.get_cids()?.iter().enumerate() {
+    for (i, cid) in store.get_cids::<Vec<_>>()?.iter().enumerate() {
         if i % 1000 == 0 {
-            info!("{} {}", cid.len(), i);
+            info!("iterating {} {}", cid, i);
         }
         len += store.get_block(cid)?.map(|x| x.len()).unwrap_or(0)
     }
@@ -107,9 +127,9 @@ fn main() -> anyhow::Result<()> {
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
-    for (i, cid) in store.get_cids()?.iter().enumerate() {
+    for (i, cid) in store.get_cids::<Vec<_>>()?.iter().enumerate() {
         if i % 1000 == 0 {
-            info!("{} {}", cid.len(), i);
+            info!("iterating {} {}", cid, i);
         }
         len += store.get_block(cid)?.map(|x| x.len()).unwrap_or(0)
     }
