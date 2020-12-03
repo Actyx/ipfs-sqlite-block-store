@@ -3,6 +3,7 @@ use std::time::Instant;
 use libipld::cid::Cid;
 use multihash::{Code, MultihashDigest};
 use sqlite_block_store::{Block, CidBlock, Store};
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 fn cid(name: &str) -> Cid {
     let hash = Code::Sha2_256.digest(name.as_bytes());
@@ -66,9 +67,12 @@ fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<CidBlock>)> {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_span_events(FmtSpan::CLOSE)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
     let mut store = Store::open("test.sqlite")?;
-    for i in 0..10 {
+    for i in 0..100 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
         store.add_blocks(tree_blocks, None)?;

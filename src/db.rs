@@ -17,11 +17,9 @@ use rusqlite::{
 use std::ops::DerefMut;
 use std::{
     collections::BTreeSet,
-    collections::VecDeque,
     marker::PhantomData,
     path::Path,
     sync::atomic::AtomicI64,
-    sync::atomic::AtomicU64,
     sync::Mutex,
     sync::{atomic::Ordering, Arc},
     time::Duration,
@@ -67,12 +65,12 @@ PRAGMA page_size = 4096;
 
 CREATE TABLE IF NOT EXISTS cids (
     id INTEGER PRIMARY KEY,
-    cid BLOB UNIQUE
+    cid BLOB UNIQUE NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS refs (
-    parent_id INTEGER,
-    child_id INTEGER,
+    parent_id INTEGER NOT NULL,
+    child_id INTEGER NOT NULL,
     UNIQUE(parent_id,child_id)
     CONSTRAINT fk_parent_id
       FOREIGN KEY (parent_id)
@@ -92,7 +90,7 @@ ON refs (child_id);
 
 CREATE TABLE IF NOT EXISTS blocks (
     block_id INTEGER PRIMARY_KEY,
-    block BLOB
+    block BLOB NOT NULL
 );
 
 -- for some reason this index is required to make the on delete cascade
@@ -101,8 +99,8 @@ CREATE INDEX IF NOT EXISTS idx_blocks_block_id
 ON blocks (block_id);
 
 CREATE TABLE IF NOT EXISTS aliases (
-    name blob UNIQUE,
-    block_id INTEGER,
+    name blob UNIQUE NOT NULL,
+    block_id INTEGER NOT NULL,
     CONSTRAINT fk_block_id
       FOREIGN KEY (block_id)
       REFERENCES cids(id)
@@ -113,8 +111,8 @@ CREATE INDEX IF NOT EXISTS idx_aliases_block_id
 ON aliases (block_id);
 
 CREATE TABLE IF NOT EXISTS temp_aliases (
-    alias INTEGER,
-    block_id INTEGER,
+    alias INTEGER NOT NULL,
+    block_id INTEGER NOT NULL,
     UNIQUE(alias,block_id)
     CONSTRAINT fk_block_id
       FOREIGN KEY (block_id)
@@ -251,23 +249,43 @@ WHERE
     Ok(res)
 }
 
-fn delete_orphaned(
+/// deletes the orphaned blocks.
+///
+/// orphaned blocks are blocks from the blocks table that do not have a corresponding id in the
+/// cid table and in the other metadata table. They are unreachable.
+///
+/// The reason for deleting them incrementally is that deleting blocks can be an expensive operation
+/// in sqlite, and we want to minimize gc related interruptions.
+///
+/// note that the execution time limit is not entirely accurate, because in many cases the cost of
+/// deleting blocks will only be fully felt when doing the commit of the transaction.
+fn delete_orphaned_incremental(
     txn: &Transaction,
     min_blocks: usize,
     max_duration: Duration,
 ) -> rusqlite::Result<()> {
-    log_execution_time("delete_orphaned", Duration::from_secs(1), || {
-        txn.prepare_cached(
-            r#"
-DELETE FROM
-    blocks
-WHERE
-    block_id NOT IN (SELECT id FROM cids) LIMIT 10000;
-        "#,
-        )?
-        .execute(NO_PARAMS)?;
-        Ok(())
-    })
+    let t0 = Instant::now();
+    let ids: Vec<i64> = log_execution_time("determine_orphaned", Duration::from_secs(1), || {
+        txn.prepare_cached("SELECT block_id FROM blocks EXCEPT SELECT id FROM cids")?
+            .query(NO_PARAMS)?
+            .mapped(|row| row.get(0))
+            .collect::<rusqlite::Result<_>>()
+    })?;
+    let mut delete_stmt = txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?")?;
+    for (i, id) in ids.iter().enumerate() {
+        let dt = t0.elapsed();
+        if i > min_blocks && dt > max_duration {
+            info!(
+                "stopped incremental delete after {}us and {} blocks",
+                dt.as_micros(),
+                i
+            );
+            break;
+        }
+        trace!("deleting block for id {}", id);
+        delete_stmt.execute(&[id])?;
+    }
+    Ok(())
 }
 
 fn delete_temp_alias(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
@@ -571,9 +589,13 @@ impl<C: ToSql + FromSql> BlockStore<C> {
     }
 
     pub fn delete_orphaned(&mut self) -> rusqlite::Result<()> {
-        log_execution_time("delete_orphaned", Duration::from_secs(1), || {
+        log_execution_time("delete_orphaned", Duration::from_millis(100), || {
             in_txn(&mut self.conn, move |txn| {
-                Ok(delete_orphaned(txn, 10000, Duration::from_secs(1))?)
+                Ok(delete_orphaned_incremental(
+                    txn,
+                    10000,
+                    Duration::from_secs(1),
+                )?)
             })
         })
     }
