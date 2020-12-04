@@ -104,13 +104,16 @@ DELETE FROM temp_aliases;
 
 -- stats table to keep track of total number and size of blocks
 CREATE TABLE IF NOT EXISTS stats (
-    name TEXT UNIQUE NOT NULL,
-    value INTEGER NOT NULL
+    count INTEGER NOT NULL,
+    size INTEGER NOT NULL
 );
 
 -- initialize stats from the real values at startup
-REPLACE INTO stats (name, value) VALUES ('count', (SELECT COUNT(id) FROM cids, blocks WHERE id = block_id));
-REPLACE INTO stats (name, value) VALUES ('size', (SELECT COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id));
+DELETE FROM stats;
+INSERT INTO stats (count, size) VALUES (
+    (SELECT COUNT(id) FROM cids, blocks WHERE id = block_id),
+    (SELECT COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id)
+);
 "#;
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
@@ -169,19 +172,20 @@ WHERE
             .mapped(|row| row.get(0))
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
-    let mut block_size_stmt = txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
+    let mut block_size_stmt =
+        txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     for (i, id) in ids.iter().enumerate() {
         if i >= min_blocks && t0.elapsed() > max_duration {
             return Ok(false);
         }
         trace!("deleting id {}", id);
-        let block_size: Option<i64> = block_size_stmt.query_row(&[id], |row| row.get(0)).optional()?;
+        let block_size: Option<i64> = block_size_stmt
+            .query_row(&[id], |row| row.get(0))
+            .optional()?;
         if let Some(block_size) = block_size {
-            txn.prepare_cached("UPDATE stats SET value = value - 1 WHERE name = 'count'")?
-                .execute(NO_PARAMS)?;
-            txn.prepare_cached("UPDATE stats SET value = value - ? WHERE name = 'size'")?
-                .execute(&[block_size])?;
+            txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?
+            .execute(&[block_size])?;
         }
         delete_stmt.execute(&[id])?;
     }
@@ -268,15 +272,15 @@ pub(crate) fn add_block<C: ToSql>(
         }
     }
     if !block_exists {
+        // add the block itself
         txn.prepare_cached("INSERT INTO blocks (block_id, block) VALUES (?, ?)")?
             .execute(params![id, &data])?;
 
-        txn.prepare_cached("UPDATE stats SET value = value + 1 WHERE name = 'count'")?
-            .execute(NO_PARAMS)?;
-
-        txn.prepare_cached("UPDATE stats SET value = value + ? WHERE name = 'size'")?
+        // update the stats
+        txn.prepare_cached("UPDATE stats SET count = count + 1, size = size + ?")?
             .execute(&[data.len() as i64])?;
 
+        // insert the links
         let mut insert_ref =
             txn.prepare_cached("INSERT INTO refs (parent_id, child_id) VALUES (?,?)")?;
         for link in links {
