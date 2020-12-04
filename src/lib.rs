@@ -19,9 +19,7 @@ use std::{
     sync::Arc,
     sync::{atomic::AtomicI64, Mutex},
     time::Duration,
-    time::Instant,
 };
-use tracing::*;
 
 pub struct Store {
     conn: Connection,
@@ -186,7 +184,7 @@ impl Store {
     }
 
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
-        let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(x)).transpose()?;
+        let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
         Ok(in_txn(&mut self.conn, |txn| {
             alias(txn, name.as_ref(), link.as_ref())
         })?)

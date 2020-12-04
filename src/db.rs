@@ -22,7 +22,7 @@ use std::{
 };
 use tracing::*;
 
-const INIT: &'static str = r#"
+const INIT: &str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 -- PRAGMA synchronous = NORMAL;
@@ -169,19 +169,6 @@ WHERE
         delete_stmt.execute(&[id])?;
     }
     Ok(true)
-}
-
-pub(crate) fn count_orphaned(txn: &Transaction) -> rusqlite::Result<u32> {
-    let res = txn
-        .prepare_cached(
-            r#"
-SELECT COUNT(block_id) FROM blocks
-WHERE
-    block_id NOT IN (SELECT id FROM cids);
-        "#,
-        )?
-        .query_row(NO_PARAMS, |row| row.get(0))?;
-    Ok(res)
 }
 
 /// deletes the orphaned blocks.

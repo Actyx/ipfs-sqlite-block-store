@@ -87,7 +87,7 @@ impl std::io::Write for CidBytes {
         let len = self.len();
         let cap: usize = MAX_SIZE - len;
         let n = cap.min(buf.len());
-        &self.data[len..len + n].copy_from_slice(&buf[0..n]);
+        self.data[len..len + n].copy_from_slice(&buf[0..n]);
         self.size += n as u8;
         Ok(n)
     }
