@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let (tree_root, tree_blocks) = build_tree("tree", 10, 4)?;
-    let (list_root, list_blocks) = build_chain("chain", 10000)?;
+    let (_list_root, list_blocks) = build_chain("chain", 10000)?;
     // for block in list_blocks {
     //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
     // }

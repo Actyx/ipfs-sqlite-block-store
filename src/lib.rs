@@ -26,6 +26,12 @@ pub struct Store {
     expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct StoreStats {
+    count: u64,
+    size: u64,
+}
+
 /// a handle that contains a temporary alias
 ///
 /// dropping this handle enqueue the alias for dropping before the next gc.
@@ -200,12 +206,12 @@ impl Store {
         Ok(in_ro_txn(&self.conn, |txn| has_block(txn, cid))?)
     }
 
-    pub fn get_block_count(&mut self) -> Result<u64> {
-        Ok(u64::try_from(in_ro_txn(&self.conn, |txn| get_block_count(txn))?).unwrap())
-    }
-
-    pub fn get_block_size(&mut self) -> Result<u64> {
-        Ok(u64::try_from(in_ro_txn(&self.conn, |txn| get_block_size(txn))?).unwrap())
+    pub fn get_store_stats(&self) -> Result<StoreStats> {
+        let (count, size) = in_ro_txn(&self.conn, |txn| get_block_count_and_size(txn))?;
+        Ok(StoreStats {
+            size: u64::try_from(size)?,
+            count: u64::try_from(count)?,
+        })
     }
 
     pub fn get_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {

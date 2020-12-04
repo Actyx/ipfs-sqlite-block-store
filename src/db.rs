@@ -99,7 +99,18 @@ ON temp_aliases (block_id);
 CREATE INDEX IF NOT EXISTS idx_temp_aliases_alias
 ON temp_aliases (alias);
 
+-- delete temp aliases that were not dropped because of crash
 DELETE FROM temp_aliases;
+
+-- stats table to keep track of total number and size of blocks
+CREATE TABLE IF NOT EXISTS stats (
+    name TEXT UNIQUE NOT NULL,
+    value INTEGER NOT NULL
+);
+
+-- initialize stats from the real values at startup
+REPLACE INTO stats (name, value) VALUES ('count', (SELECT COUNT(id) FROM cids, blocks WHERE id = block_id));
+REPLACE INTO stats (name, value) VALUES ('size', (SELECT COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id));
 "#;
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
@@ -108,14 +119,12 @@ fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
         .optional()
 }
 
-pub(crate) fn get_block_size(txn: &Transaction) -> rusqlite::Result<i64> {
-    txn.prepare("SELECT COALESCE(SUM(LENGTH(block)), 0) FROM blocks")?
-        .query_row(NO_PARAMS, |row| row.get(0))
-}
-
-pub(crate) fn get_block_count(txn: &Transaction) -> rusqlite::Result<i64> {
-    txn.prepare("SELECT count(*) FROM blocks")?
-        .query_row(NO_PARAMS, |row| row.get(0))
+/// returns the number and size of blocks, excluding orphaned blocks
+pub(crate) fn get_block_count_and_size(txn: &Transaction) -> rusqlite::Result<(i64, i64)> {
+    txn.prepare(
+        "SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id",
+    )?
+    .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))
 }
 
 fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64> {
@@ -254,6 +263,9 @@ pub(crate) fn add_block<C: ToSql>(
         txn.prepare_cached("INSERT INTO blocks (block_id, block) VALUES (?, ?)")?
             .execute(params![id, &data])?;
 
+        txn.prepare_cached("UPDATE stats SET value = value + 1 WHERE name = 'count'")?
+            .execute(NO_PARAMS)?;
+
         let mut insert_ref =
             txn.prepare_cached("INSERT INTO refs (parent_id, child_id) VALUES (?,?)")?;
         for link in links {
@@ -336,7 +348,7 @@ pub(crate) fn get_missing_blocks<C: ToSql + FromSql>(
     let id = get_or_create_id(&txn, cid)?;
     let res = txn.prepare_cached(
         r#"
-WITH     RECURSIVE
+WITH RECURSIVE
     -- find descendants of cid, including the id of the cid itself
     descendant_of(id) AS (
         SELECT ?
