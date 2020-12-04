@@ -1,3 +1,4 @@
+use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
 use rusqlite::{params, Connection, OpenFlags};
@@ -6,7 +7,6 @@ use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
-use itertools::*;
 
 pub fn query_roots(path: &Path) -> anyhow::Result<Vec<(String, Cid)>> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -46,7 +46,7 @@ impl sqlite_block_store::Block<Cid> for IpldBlock {
     fn links(&self) -> Self::I {
         let mut links = Vec::new();
         self.0.references(&mut links).unwrap();
-        links.into_iter()        
+        links.into_iter()
     }
 }
 

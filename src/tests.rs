@@ -31,7 +31,7 @@ fn insert_get() -> anyhow::Result<()> {
     // check the data
     assert_eq!(store.get_block(&a)?, Some(b"abcd".to_vec()));
     // check descendants
-    assert_eq!(store.get_descendants(&a)?, vec![a, b, c]);
+    assert_eq!(store.get_descendants::<Vec<_>>(&a)?, vec![a, b, c]);
     // check missing blocks - should be b and c
     assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, c]);
     // alias the root
@@ -76,7 +76,7 @@ fn incremental_insert() -> anyhow::Result<()> {
     // check the data
     assert_eq!(store.get_block(&a)?, Some(b"abcd".to_vec()));
     // check descendants
-    assert_eq!(store.get_descendants(&a)?, vec![a, b, c, d, e]);
+    assert_eq!(store.get_descendants::<Vec<_>>(&a)?, vec![a, b, c, d, e]);
     // check missing blocks - should be b and c
     assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, d, e]);
     // alias the root
@@ -96,7 +96,7 @@ fn temp_alias() -> anyhow::Result<()> {
     let mut store = Store::memory()?;
     let a = cid("a");
     let b = cid("b");
-    let alias = store.temp_alias()?;
+    let alias = store.temp_alias();
 
     store.add_block(&a, b"abcd", vec![], Some(&alias))?;
     store.gc()?;

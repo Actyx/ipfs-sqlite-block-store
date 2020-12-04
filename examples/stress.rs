@@ -93,7 +93,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "descendants of {:?} {:?}",
         tree_root,
-        fmt_cids(store.get_descendants(&tree_root)?)
+        fmt_cids(store.get_descendants::<Vec<_>>(&tree_root)?)
     );
     // println!(
     //     "descendants of {:?} {:?}",
@@ -107,7 +107,10 @@ fn main() -> anyhow::Result<()> {
     );
     store.add_block(&cid("b"), b"bdata", vec![], None)?;
     store.add_block(&cid("c"), b"cdata", vec![], None)?;
-    println!("{:?}", fmt_cids(store.get_descendants(&cid("a"))?));
+    println!(
+        "{:?}",
+        fmt_cids(store.get_descendants::<Vec<_>>(&cid("a"))?)
+    );
     store.add_block(&cid("d"), b"ddata", vec![cid("b"), cid("c")], None)?;
 
     store.alias(b"source1", Some(&cid("a")))?;
