@@ -169,12 +169,20 @@ WHERE
             .mapped(|row| row.get(0))
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
+    let mut block_size_stmt = txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     for (i, id) in ids.iter().enumerate() {
         if i >= min_blocks && t0.elapsed() > max_duration {
             return Ok(false);
         }
         trace!("deleting id {}", id);
+        let block_size: Option<i64> = block_size_stmt.query_row(&[id], |row| row.get(0)).optional()?;
+        if let Some(block_size) = block_size {
+            txn.prepare_cached("UPDATE stats SET value = value - 1 WHERE name = 'count'")?
+                .execute(NO_PARAMS)?;
+            txn.prepare_cached("UPDATE stats SET value = value - ? WHERE name = 'size'")?
+                .execute(&[block_size])?;
+        }
         delete_stmt.execute(&[id])?;
     }
     Ok(true)
@@ -265,6 +273,9 @@ pub(crate) fn add_block<C: ToSql>(
 
         txn.prepare_cached("UPDATE stats SET value = value + 1 WHERE name = 'count'")?
             .execute(NO_PARAMS)?;
+
+        txn.prepare_cached("UPDATE stats SET value = value + ? WHERE name = 'size'")?
+            .execute(&[data.len() as i64])?;
 
         let mut insert_ref =
             txn.prepare_cached("INSERT INTO refs (parent_id, child_id) VALUES (?,?)")?;
