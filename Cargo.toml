@@ -3,6 +3,7 @@ name = "sqlite_block_store"
 version = "0.1.0"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>"]
 edition = "2018"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 derive_more = "0.99.11"
