@@ -10,14 +10,15 @@ pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
 use rusqlite::{Connection, Transaction};
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     fmt,
     iter::FromIterator,
     ops::DerefMut,
     path::Path,
-    sync::atomic::Ordering,
-    sync::Arc,
-    sync::{atomic::AtomicI64, Mutex},
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -69,10 +70,7 @@ impl Drop for TempAlias {
 }
 
 /// execute a statement in a write transaction
-fn in_txn<T>(
-    conn: &mut Connection,
-    f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
-) -> rusqlite::Result<T> {
+fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
     let txn = conn.transaction()?;
     let result = f(&txn);
     if result.is_ok() {
@@ -88,13 +86,12 @@ fn in_ro_txn<T>(
     f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
     let txn = conn.unchecked_transaction()?;
-    let result = f(&txn);
-    result
+    f(&txn)
 }
 
 pub trait Block<C> {
     type I: Iterator<Item = C>;
-    fn cid(&self) -> C;
+    fn cid(&self) -> &C;
     fn data(&self) -> &[u8];
     fn links(&self) -> Self::I;
 }
@@ -114,8 +111,8 @@ impl CidBlock {
 impl Block<Cid> for CidBlock {
     type I = std::vec::IntoIter<Cid>;
 
-    fn cid(&self) -> Cid {
-        self.cid
+    fn cid(&self) -> &Cid {
+        &self.cid
     }
 
     fn data(&self) -> &[u8] {
@@ -124,44 +121,6 @@ impl Block<Cid> for CidBlock {
 
     fn links(&self) -> Self::I {
         self.links.clone().into_iter()
-    }
-}
-
-struct CidBytesBlock {
-    cid: CidBytes,
-    data: Vec<u8>,
-    links: Vec<CidBytes>,
-}
-
-impl Block<CidBytes> for CidBytesBlock {
-    type I = std::vec::IntoIter<CidBytes>;
-
-    fn cid(&self) -> CidBytes {
-        self.cid
-    }
-
-    fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    fn links(&self) -> Self::I {
-        self.links.clone().into_iter()
-    }
-}
-
-impl TryFrom<CidBlock> for CidBytesBlock {
-    type Error = cid::Error;
-
-    fn try_from(value: CidBlock) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            cid: (&value.cid).try_into()?,
-            data: value.data,
-            links: value
-                .links
-                .iter()
-                .map(CidBytes::try_from)
-                .collect::<std::result::Result<Vec<_>, cid::Error>>()?,
-        })
     }
 }
 
@@ -194,7 +153,7 @@ impl Store {
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
         let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
         Ok(in_txn(&mut self.conn, |txn| {
-            alias(txn, name.as_ref(), link.as_ref())
+            Ok(alias(txn, name.as_ref(), link.as_ref())?)
         })?)
     }
 
@@ -276,7 +235,7 @@ impl Store {
                 for id in expired_temp_aliases {
                     delete_temp_alias(txn, id)?;
                 }
-                incremental_gc(&txn, min_blocks, max_duration)
+                Ok(incremental_gc(&txn, min_blocks, max_duration)?)
             })
         })?)
     }
@@ -300,14 +259,16 @@ impl Store {
         blocks: impl IntoIterator<Item = CidBlock>,
         alias: Option<&TempAlias>,
     ) -> Result<()> {
-        let blocks = blocks
-            .into_iter()
-            .map(CidBytesBlock::try_from)
-            .collect::<cid::Result<Vec<_>>>()?;
-        let alias = alias.map(|alias| &alias.id);
         in_txn(&mut self.conn, move |txn| {
+            let alias = alias.map(|alias| &alias.id);
             for block in blocks.into_iter() {
-                add_block(txn, &block.cid(), block.data(), block.links(), alias)?;
+                let cid = CidBytes::try_from(&block.cid)?;
+                let links = block
+                    .links
+                    .iter()
+                    .map(CidBytes::try_from)
+                    .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
+                add_block(txn, &cid, &block.data, links, alias)?;
             }
             Ok(())
         })?;

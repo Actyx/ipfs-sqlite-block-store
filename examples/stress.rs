@@ -39,7 +39,7 @@ fn build_tree_0(
         children
     };
     let block = CidBlock::new(node, data, children);
-    let cid = block.cid();
+    let cid = block.cid().clone();
     blocks.push(block);
     Ok(cid)
 }

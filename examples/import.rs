@@ -35,8 +35,8 @@ pub struct IpldBlock(libipld::Block<DefaultParams>);
 impl sqlite_block_store::Block<Cid> for IpldBlock {
     type I = std::vec::IntoIter<Cid>;
 
-    fn cid(&self) -> Cid {
-        self.0.cid().clone()
+    fn cid(&self) -> &Cid {
+        self.0.cid()
     }
 
     fn data(&self) -> &[u8] {

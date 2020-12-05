@@ -168,12 +168,12 @@ WHERE
     // log execution time of the non-interruptible query that computes the set of ids to delete
     let ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
         id_query
-            .query(NO_PARAMS)?
-            .mapped(|row| row.get(0))
+            .query_map(NO_PARAMS, |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
     let mut block_size_stmt =
         txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
+    let mut update_stats_stmt = txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     for (i, id) in ids.iter().enumerate() {
         if i >= min_blocks && t0.elapsed() > max_duration {
@@ -184,8 +184,7 @@ WHERE
             .query_row(&[id], |row| row.get(0))
             .optional()?;
         if let Some(block_size) = block_size {
-            txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?
-            .execute(&[block_size])?;
+            update_stats_stmt.execute(&[block_size])?;
         }
         delete_stmt.execute(&[id])?;
     }
@@ -212,8 +211,7 @@ pub(crate) fn incremental_delete_orphaned(
         txn.prepare_cached(
             "SELECT block_id FROM blocks WHERE block_id NOT IN (SELECT id FROM cids)",
         )?
-        .query(NO_PARAMS)?
-        .mapped(|row| row.get(0))
+        .query_map(NO_PARAMS, |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()
     })?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?")?;
@@ -347,8 +345,7 @@ WITH RECURSIVE
     SELECT cid from cids,descendant_ids WHERE cids.id = descendant_ids.id;
 "#,
         )?
-        .query(&[cid])?
-        .mapped(|row| row.get(0))
+        .query_map(&[cid], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?;
     Ok(res)
 }
@@ -378,8 +375,7 @@ WITH RECURSIVE
 SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
 "#,
     )?
-        .query(&[id])?
-        .mapped(|row| row.get(0))
+        .query_map(&[id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?;
     Ok(res)
 }
@@ -403,8 +399,7 @@ pub(crate) fn alias<C: ToSql>(
 pub(crate) fn get_cids<C: FromSql>(txn: &Transaction) -> rusqlite::Result<Vec<C>> {
     Ok(txn
         .prepare_cached(r#"SELECT cid FROM cids"#)?
-        .query(NO_PARAMS)?
-        .mapped(|row| row.get(0))
+        .query_map(NO_PARAMS, |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
