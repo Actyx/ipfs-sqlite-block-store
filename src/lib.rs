@@ -28,7 +28,9 @@ pub struct Store {
 
 #[derive(Debug, Clone, Default)]
 pub struct StoreStats {
+    /// number of blocks, excluding orphaned blocks
     count: u64,
+    /// total size of blocks, excluding orphaned blocks
     size: u64,
 }
 
