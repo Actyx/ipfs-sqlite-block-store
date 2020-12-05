@@ -126,26 +126,26 @@ fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> Result<T>) ->
     f(&txn)
 }
 
-pub trait Block<C> {
-    type I: Iterator<Item = C>;
-    fn cid(&self) -> &C;
+pub trait Block {
+    type I: Iterator<Item = Cid>;
+    fn cid(&self) -> &Cid;
     fn data(&self) -> &[u8];
     fn links(&self) -> Self::I;
 }
 
-pub struct CidBlock {
+pub struct OwnedBlock {
     cid: Cid,
     data: Vec<u8>,
     links: Vec<Cid>,
 }
 
-impl CidBlock {
+impl OwnedBlock {
     pub fn new(cid: Cid, data: Vec<u8>, links: Vec<Cid>) -> Self {
         Self { cid, data, links }
     }
 }
 
-impl Block<Cid> for CidBlock {
+impl Block for OwnedBlock {
     type I = std::vec::IntoIter<Cid>;
 
     fn cid(&self) -> &Cid {
@@ -158,6 +158,42 @@ impl Block<Cid> for CidBlock {
 
     fn links(&self) -> Self::I {
         self.links.clone().into_iter()
+    }
+}
+
+struct BorrowedBlock<'a, F> {
+    cid: Cid,
+    data: &'a [u8],
+    links: F,
+}
+
+impl<'a, F, I> BorrowedBlock<'a, F>
+where
+    F: Fn() -> I,
+    I: Iterator<Item = Cid>,
+{
+    fn new(cid: Cid, data: &'a [u8], links: F) -> Self {
+        Self { cid, data, links }
+    }
+}
+
+impl<'a, F, I> Block for BorrowedBlock<'a, F>
+where
+    F: Fn() -> I,
+    I: Iterator<Item = Cid>,
+{
+    type I = I;
+
+    fn cid(&self) -> &Cid {
+        &self.cid
+    }
+
+    fn data(&self) -> &[u8] {
+        self.data
+    }
+
+    fn links(&self) -> Self::I {
+        (self.links)()
     }
 }
 
@@ -286,45 +322,56 @@ impl Store {
             },
         )?)
     }
-    pub fn add_blocks(
+    pub fn add_blocks<B: Block>(
         &mut self,
-        blocks: impl IntoIterator<Item = CidBlock>,
+        blocks: impl IntoIterator<Item = B>,
         alias: Option<&TempAlias>,
     ) -> Result<()> {
-        in_txn(&mut self.conn, move |txn| {
+        let ids = in_txn(&mut self.conn, move |txn| {
             let alias = alias.map(|alias| &alias.id);
-            for block in blocks.into_iter() {
-                let cid = CidBytes::try_from(&block.cid)?;
-                let links = block
-                    .links
-                    .iter()
-                    .map(CidBytes::try_from)
-                    .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-                add_block(txn, &cid, &block.data, links, alias)?;
-            }
-            Ok(())
+            Ok(blocks
+                .into_iter()
+                .map(|block| {
+                    let cid_bytes = CidBytes::try_from(block.cid())?;
+                    let links = block
+                        .links()
+                        .map(|x| CidBytes::try_from(&x))
+                        .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
+                    let id = add_block(txn, &cid_bytes, &block.data(), links, alias)?;
+                    Ok((id, block))
+                })
+                .collect::<Result<Vec<_>>>()?)
         })?;
+        for (id, block) in ids {
+            self.config
+                .cache_tracker
+                .block_written(id, block.cid(), block.data());
+        }
         Ok(())
     }
-    pub fn add_block(
+    pub fn add_block<I>(
         &mut self,
         cid: &Cid,
         data: &[u8],
-        links: impl IntoIterator<Item = Cid>,
+        links: I,
         alias: Option<&TempAlias>,
-    ) -> Result<bool> {
-        let cid = CidBytes::try_from(cid)?;
-        let links = links
-            .into_iter()
-            .map(|x| CidBytes::try_from(&x))
-            .collect::<cid::Result<Vec<_>>>()?;
-        let alias = alias.map(|alias| &alias.id);
-        Ok(in_txn(&mut self.conn, |txn| {
-            Ok(add_block(txn, &cid, data, links, alias)?)
-        })?)
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = Cid> + Clone,
+    {
+        let block = BorrowedBlock::new(cid.clone(), data, move || links.clone().into_iter());
+        self.add_blocks(Some(block), alias)?;
+        Ok(())
     }
     pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
-        let cid = CidBytes::try_from(cid)?;
-        Ok(in_ro_txn(&self.conn, |txn| Ok(get_block(txn, cid)?))?)
+        let cid_bytes = CidBytes::try_from(cid)?;
+        let result = in_ro_txn(&self.conn, |txn| get_block(txn, cid_bytes))?;
+        Ok(result.map(|(id, block)| {
+            // track the cache access
+            self.config
+                .cache_tracker
+                .block_accessed(id, cid, block.as_ref());
+            block
+        }))
     }
 }

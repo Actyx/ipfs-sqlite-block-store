@@ -8,7 +8,7 @@ pub trait CacheTracker: Debug {
     fn block_accessed(&mut self, id: i64, cid: &Cid, data: &[u8]);
     /// called whenever a block is written, even if it already exists
     fn block_written(&mut self, id: i64, cid: &Cid, data: &[u8]);
-    /// sort ids by importance. Ids that should be kept should go to the end.
+    /// sort ids by importance. More important ids should go to the end.
     fn sort_ids(&self, ids: &mut [i64]);
 }
 

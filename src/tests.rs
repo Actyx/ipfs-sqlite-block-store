@@ -7,12 +7,6 @@ fn cid(name: &str) -> Cid {
     Cid::new_v1(0x71, hash)
 }
 
-// fn cid(name: &str) -> CidBytes {
-//     let mut res = CidBytes::default();
-//     res.write(name.as_bytes()).unwrap();
-//     res
-// }
-
 #[test]
 fn insert_get() -> anyhow::Result<()> {
     let mut store = Store::memory(Config::default())?;

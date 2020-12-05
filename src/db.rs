@@ -276,7 +276,7 @@ pub(crate) fn add_block<C: ToSql>(
     data: &[u8],
     links: impl IntoIterator<Item = C>,
     alias: Option<&AtomicI64>,
-) -> rusqlite::Result<bool> {
+) -> crate::Result<i64> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
@@ -319,16 +319,20 @@ pub(crate) fn add_block<C: ToSql>(
             insert_ref.execute(params![id, child_id])?;
         }
     }
-    Ok(true)
+    Ok(id)
 }
 
 /// Get a block
-pub(crate) fn get_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<Vec<u8>>> {
+pub(crate) fn get_block(
+    txn: &Transaction,
+    cid: impl ToSql,
+) -> crate::Result<Option<(i64, Vec<u8>)>> {
     let id = get_id(&txn, cid)?;
     Ok(if let Some(id) = id {
         txn.prepare_cached("SELECT block FROM blocks WHERE block_id = ?")?
             .query_row(&[id], |row| row.get(0))
             .optional()?
+            .map(|b| (id, b))
     } else {
         None
     })
