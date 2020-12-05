@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     let mut store = Store::open("test.sqlite")?;
-    for i in 0..100 {
+    for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
         store.add_blocks(tree_blocks, None)?;
@@ -80,8 +80,8 @@ fn main() -> anyhow::Result<()> {
             store.alias(&format!("tree-alias-{}", i).as_bytes(), Some(&tree_root))?;
         }
     }
-    let (tree_root, tree_blocks) = build_tree("tree", 10, 4)?;
-    let (list_root, list_blocks) = build_chain("chain", 10000)?;
+    let (tree_root, tree_blocks) = build_tree("test-tree", 10, 4)?;
+    let (_list_root, list_blocks) = build_chain("chain", 10000)?;
     // for block in list_blocks {
     //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
     // }
@@ -91,9 +91,9 @@ fn main() -> anyhow::Result<()> {
     store.add_blocks(tree_blocks, None)?;
     store.add_blocks(list_blocks, None)?;
     println!(
-        "descendants of {:?} {:?}",
+        "descendants of {:?} {}",
         tree_root,
-        fmt_cids(store.get_descendants::<Vec<_>>(&tree_root)?)
+        store.get_descendants::<Vec<_>>(&tree_root)?.len(),
     );
     // println!(
     //     "descendants of {:?} {:?}",

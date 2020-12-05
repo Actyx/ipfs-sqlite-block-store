@@ -99,7 +99,21 @@ ON temp_aliases (block_id);
 CREATE INDEX IF NOT EXISTS idx_temp_aliases_alias
 ON temp_aliases (alias);
 
+-- delete temp aliases that were not dropped because of crash
 DELETE FROM temp_aliases;
+
+-- stats table to keep track of total number and size of blocks
+CREATE TABLE IF NOT EXISTS stats (
+    count INTEGER NOT NULL,
+    size INTEGER NOT NULL
+);
+
+-- initialize stats from the real values at startup
+DELETE FROM stats;
+INSERT INTO stats (count, size) VALUES (
+    (SELECT COUNT(id) FROM cids, blocks WHERE id = block_id),
+    (SELECT COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id)
+);
 "#;
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
@@ -108,14 +122,12 @@ fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
         .optional()
 }
 
-pub(crate) fn get_block_size(txn: &Transaction) -> rusqlite::Result<i64> {
-    txn.prepare("SELECT COALESCE(SUM(LENGTH(block)), 0) FROM blocks")?
-        .query_row(NO_PARAMS, |row| row.get(0))
-}
-
-pub(crate) fn get_block_count(txn: &Transaction) -> rusqlite::Result<i64> {
-    txn.prepare("SELECT count(*) FROM blocks")?
-        .query_row(NO_PARAMS, |row| row.get(0))
+/// returns the number and size of blocks, excluding orphaned blocks
+pub(crate) fn get_block_count_and_size(txn: &Transaction) -> rusqlite::Result<(i64, i64)> {
+    txn.prepare(
+        "SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id",
+    )?
+    .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))
 }
 
 fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64> {
@@ -160,12 +172,21 @@ WHERE
             .mapped(|row| row.get(0))
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
+    let mut block_size_stmt =
+        txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     for (i, id) in ids.iter().enumerate() {
         if i >= min_blocks && t0.elapsed() > max_duration {
             return Ok(false);
         }
         trace!("deleting id {}", id);
+        let block_size: Option<i64> = block_size_stmt
+            .query_row(&[id], |row| row.get(0))
+            .optional()?;
+        if let Some(block_size) = block_size {
+            txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?
+            .execute(&[block_size])?;
+        }
         delete_stmt.execute(&[id])?;
     }
     Ok(true)
@@ -251,9 +272,15 @@ pub(crate) fn add_block<C: ToSql>(
         }
     }
     if !block_exists {
+        // add the block itself
         txn.prepare_cached("INSERT INTO blocks (block_id, block) VALUES (?, ?)")?
             .execute(params![id, &data])?;
 
+        // update the stats
+        txn.prepare_cached("UPDATE stats SET count = count + 1, size = size + ?")?
+            .execute(&[data.len() as i64])?;
+
+        // insert the links
         let mut insert_ref =
             txn.prepare_cached("INSERT INTO refs (parent_id, child_id) VALUES (?,?)")?;
         for link in links {
@@ -336,7 +363,7 @@ pub(crate) fn get_missing_blocks<C: ToSql + FromSql>(
     let id = get_or_create_id(&txn, cid)?;
     let res = txn.prepare_cached(
         r#"
-WITH     RECURSIVE
+WITH RECURSIVE
     -- find descendants of cid, including the id of the cid itself
     descendant_of(id) AS (
         SELECT ?
