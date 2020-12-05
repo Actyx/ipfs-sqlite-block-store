@@ -1,4 +1,4 @@
-use crate::Store;
+use crate::{Config, Store};
 use libipld::cid::Cid;
 use libipld::multihash::{Code, MultihashDigest};
 
@@ -15,7 +15,7 @@ fn cid(name: &str) -> Cid {
 
 #[test]
 fn insert_get() -> anyhow::Result<()> {
-    let mut store = Store::memory()?;
+    let mut store = Store::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
@@ -48,7 +48,7 @@ fn insert_get() -> anyhow::Result<()> {
 
 #[test]
 fn incremental_insert() -> anyhow::Result<()> {
-    let mut store = Store::memory()?;
+    let mut store = Store::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
@@ -93,7 +93,7 @@ fn incremental_insert() -> anyhow::Result<()> {
 
 #[test]
 fn temp_alias() -> anyhow::Result<()> {
-    let mut store = Store::memory()?;
+    let mut store = Store::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
     let alias = store.temp_alias();

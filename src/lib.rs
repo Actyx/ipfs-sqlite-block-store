@@ -1,3 +1,4 @@
+mod cache;
 mod cidbytes;
 mod db;
 mod error;
@@ -5,6 +6,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
+use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
@@ -22,12 +24,50 @@ use std::{
     time::Duration,
 };
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SizeTargets {
+    /// target number of blocks.
+    ///
+    /// Up to this number, the store will retain everything even if not pinned.
+    /// Once this number is exceeded, the store will run garbage collection of all
+    /// unpinned blocks until the block criterion is met again.
+    ///
+    /// To completely disable storing of non-pinned blocks, set this to 0.
+    /// Even then, the store will never delete pinned blocks.
+    pub count: u64,
+
+    /// target store size.
+    ///
+    /// Up to this size, the store will retain everything even if not pinned.
+    /// Once this size is exceeded, the store will run garbage collection of all
+    /// unpinned blocks until the size criterion is met again.
+    ///
+    /// The store will never delete pinned blocks.
+    pub size: u64,
+}
+
+#[derive(Debug)]
+pub struct Config {
+    size_targets: SizeTargets,
+    cache_tracker: Box<dyn CacheTracker>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            size_targets: Default::default(),
+            cache_tracker: Box::new(NoopCacheTracker),
+        }
+    }
+}
+
 pub struct Store {
     conn: Connection,
     expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
+    config: Config,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoreStats {
     /// number of blocks, excluding orphaned blocks
     count: u64,
@@ -81,10 +121,7 @@ fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> Result<T>) -
 
 /// execute a statement in a readonly transaction
 /// nested transactions are not allowed here.
-fn in_ro_txn<T>(
-    conn: &Connection,
-    f: impl FnOnce(&Transaction) -> rusqlite::Result<T>,
-) -> rusqlite::Result<T> {
+fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
     let txn = conn.unchecked_transaction()?;
     f(&txn)
 }
@@ -125,21 +162,23 @@ impl Block<Cid> for CidBlock {
 }
 
 impl Store {
-    pub fn memory() -> rusqlite::Result<Self> {
+    pub fn memory(config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn)?;
         Ok(Self {
             conn,
             expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            config,
         })
     }
 
-    pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn)?;
         Ok(Self {
             conn,
             expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            config,
         })
     }
 
@@ -152,55 +191,42 @@ impl Store {
 
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
         let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
-        Ok(in_txn(&mut self.conn, |txn| {
-            Ok(alias(txn, name.as_ref(), link.as_ref())?)
-        })?)
+        in_txn(&mut self.conn, |txn| {
+            alias(txn, name.as_ref(), link.as_ref())
+        })
     }
 
     pub fn has_cid(&self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
-        Ok(in_ro_txn(&self.conn, |txn| has_cid(txn, cid))?)
+        in_ro_txn(&self.conn, |txn| has_cid(txn, cid))
     }
 
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
-        Ok(in_ro_txn(&self.conn, |txn| has_block(txn, cid))?)
+        in_ro_txn(&self.conn, |txn| has_block(txn, cid))
     }
 
     pub fn get_store_stats(&self) -> Result<StoreStats> {
-        let (count, size) = in_ro_txn(&self.conn, |txn| get_block_count_and_size(txn))?;
-        Ok(StoreStats {
-            size: u64::try_from(size)?,
-            count: u64::try_from(count)?,
-        })
+        in_ro_txn(&self.conn, get_store_stats)
     }
 
     pub fn get_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
-        let result = in_ro_txn(&self.conn, |txn| get_cids::<CidBytes>(txn))?;
-        let res = result
-            .iter()
-            .map(Cid::try_from)
-            .collect::<cid::Result<C>>()?;
+        let res = in_ro_txn(&self.conn, |txn| Ok(get_cids::<CidBytes>(txn)?))?;
+        let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
     pub fn get_descendants<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
-        let result = in_ro_txn(&self.conn, move |txn| Ok(get_descendants(txn, cid)?))?;
-        let res = result
-            .iter()
-            .map(Cid::try_from)
-            .collect::<cid::Result<C>>()?;
+        let res = in_ro_txn(&self.conn, move |txn| get_descendants(txn, cid))?;
+        let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
     pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let result = log_execution_time("get_missing_blocks", Duration::from_millis(10), || {
-            in_ro_txn(&self.conn, move |txn| {
-                let result = get_missing_blocks(txn, cid)?;
-                Ok(result)
-            })
+            in_ro_txn(&self.conn, move |txn| get_missing_blocks(txn, cid))
         })?;
         let res = result
             .iter()
@@ -230,12 +256,18 @@ impl Store {
             result
         };
         Ok(log_execution_time("gc", Duration::from_secs(1), || {
+            let size_targets = self.config.size_targets;
             in_txn(&mut self.conn, move |txn| {
                 // get rid of dropped temp aliases, this should be fast
                 for id in expired_temp_aliases {
                     delete_temp_alias(txn, id)?;
                 }
-                Ok(incremental_gc(&txn, min_blocks, max_duration)?)
+                Ok(incremental_gc(
+                    &txn,
+                    min_blocks,
+                    max_duration,
+                    size_targets,
+                )?)
             })
         })?)
     }
