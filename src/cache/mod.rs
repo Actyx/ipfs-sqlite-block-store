@@ -59,6 +59,18 @@ pub struct InMemCacheTracker<T, F> {
     mk_cache_entry: F,
 }
 
+pub trait KeySelector<T> {
+    fn select(&self, access: Duration, cid: &Cid, data: &[u8]) -> Option<T>;
+}
+
+impl<T, F> KeySelector<T> for F
+    where F: Fn(Duration, &Cid, &[u8]) -> Option<T>
+{
+    fn select(&self, access: Duration, cid: &Cid, data: &[u8]) -> Option<T> {
+        (self)(access, cid, data)
+    }
+}
+
 impl<T, F> InMemCacheTracker<T, F>
 where
     T: Ord + Clone + Debug,
