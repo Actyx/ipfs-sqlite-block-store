@@ -1,4 +1,4 @@
-mod cache;
+pub mod cache;
 mod cidbytes;
 mod db;
 mod error;
@@ -6,7 +6,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
-pub use cache::{CacheTracker, NoopCacheTracker};
+use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
