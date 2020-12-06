@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
-    for (i, cid) in store.get_cids::<Vec<_>>()?.iter().enumerate() {
+    for (i, cid) in store.get_block_cids::<Vec<_>>()?.iter().enumerate() {
         if i % 1000 == 0 {
             info!("iterating {} {}", cid, i);
         }
@@ -127,7 +127,7 @@ fn main() -> anyhow::Result<()> {
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
-    for (i, cid) in store.get_cids::<Vec<_>>()?.iter().enumerate() {
+    for (i, cid) in store.get_block_cids::<Vec<_>>()?.iter().enumerate() {
         if i % 1000 == 0 {
             info!("iterating {} {}", cid, i);
         }

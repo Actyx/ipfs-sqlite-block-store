@@ -24,6 +24,13 @@ use std::{
     time::Duration,
 };
 
+/// Size targets for a store. Gc of non-pinned blocks will start once one of the size targets is exceeded.
+///
+/// There are targets for both block count and block size. The reason for this is that a store that has
+/// a very large number of tiny blocks will become sluggish despite not having a large total size.
+///
+/// Size targets only apply to non-pinned blocks. Pinned blocks will never be gced even if exceeding one of the
+/// size targets.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SizeTargets {
     /// target number of blocks.
@@ -49,6 +56,10 @@ pub struct SizeTargets {
 impl SizeTargets {
     pub fn new(count: u64, size: u64) -> Self {
         Self { count, size }
+    }
+
+    pub fn exceeded(&self, stats: &StoreStats) -> bool {
+        stats.count > self.count || stats.size > self.size
     }
 }
 
@@ -225,9 +236,11 @@ impl Store {
         })
     }
 
-    pub fn open(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn)?;
+        let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
+        config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
             expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
@@ -263,8 +276,14 @@ impl Store {
         in_ro_txn(&self.conn, get_store_stats)
     }
 
-    pub fn get_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
-        let res = in_ro_txn(&self.conn, |txn| Ok(get_cids::<CidBytes>(txn)?))?;
+    pub fn get_known_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
+        let res = in_ro_txn(&self.conn, |txn| Ok(get_known_cids::<CidBytes>(txn)?))?;
+        let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
+        Ok(res)
+    }
+
+    pub fn get_block_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
+        let res = in_ro_txn(&self.conn, |txn| Ok(get_block_cids::<CidBytes>(txn)?))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }

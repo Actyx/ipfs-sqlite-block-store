@@ -1,7 +1,15 @@
 use fnv::{FnvHashMap, FnvHashSet};
 use libipld::Cid;
 use sqlite_block_store::{CacheTracker, Config, OwnedBlock, SizeTargets, Store};
-use std::{cmp::Ord, fmt::Debug, ops::DerefMut, sync::{Arc, RwLock}, time::Duration, time::Instant, sync::Mutex};
+use std::{
+    cmp::Ord,
+    fmt::Debug,
+    ops::DerefMut,
+    sync::Mutex,
+    sync::{Arc, RwLock},
+    time::Duration,
+    time::Instant,
+};
 
 /// keeps track of the last access time of blocks in memory
 #[derive(Debug)]
@@ -12,7 +20,7 @@ pub struct InMemLruCacheTracker {
 impl InMemLruCacheTracker {
     fn new() -> Self {
         Self {
-            cache: Arc::new(Mutex::new(FnvHashMap::default()))
+            cache: Arc::new(Mutex::new(FnvHashMap::default())),
         }
     }
 }
@@ -70,10 +78,10 @@ fn main() -> anyhow::Result<()> {
         SortKey::new(None, i64::max_value())
             < SortKey::new(Some(Duration::default()), i64::min_value())
     );
-    let mut store =
-        Store::memory(Config::default()
+    let mut store = Store::memory(
+        Config::default()
             .with_size_targets(SizeTargets::new(1000, 1000000))
-            .with_cache_tracker(InMemLruCacheTracker::new())
-        )?;
+            .with_cache_tracker(InMemLruCacheTracker::new()),
+    )?;
     Ok(())
 }

@@ -1,10 +1,21 @@
-use crate::{Config, Store};
+use crate::{cache::SortByIdCacheTracker, Config, SizeTargets, Store};
+use fnv::FnvHashSet;
 use libipld::cid::Cid;
 use libipld::multihash::{Code, MultihashDigest};
+use std::time::Duration;
 
 fn cid(name: &str) -> Cid {
     let hash = Code::Sha2_256.digest(name.as_bytes());
     Cid::new_v1(0x71, hash)
+}
+
+fn data(cid: &Cid, n: usize) -> Vec<u8> {
+    let mut res = vec![0u8; n];
+    let text = cid.to_string();
+    let bytes = text.as_bytes();
+    let len = res.len().min(bytes.len());
+    &res[0..len].copy_from_slice(&bytes[0..len]);
+    res
 }
 
 #[test]
@@ -105,5 +116,65 @@ fn temp_alias() -> anyhow::Result<()> {
     assert!(!store.has_block(&a)?);
     assert!(!store.has_block(&b)?);
 
+    Ok(())
+}
+
+#[test]
+fn size_targets() -> anyhow::Result<()> {
+    // create a store with a non-empty size target to enable keeping non-pinned stuff around
+    let mut store = Store::memory(
+        Config::default()
+            .with_size_targets(SizeTargets::new(10, 10000))
+            .with_cache_tracker(SortByIdCacheTracker),
+    )?;
+
+    fn unpinned(i: usize) -> Cid {
+        cid(&format!("{}", i))
+    }
+
+    fn pinned(i: usize) -> Cid {
+        cid(&format!("pinned-{}", i))
+    }
+
+    // add some pinned stuff at the very beginning
+    for i in 0..2 {
+        let cid = pinned(i);
+        let data = data(&cid, 1000);
+        store.add_block(&cid, &data, vec![], None)?;
+        store.alias(cid.to_bytes(), Some(&cid))?;
+    }
+
+    // add data that is within the size targets
+    for i in 0..10 {
+        let cid = unpinned(i);
+        let data = data(&cid, 1000);
+        store.add_block(&cid, &data, vec![], None)?;
+    }
+
+    // check that gc does nothing
+    store.incremental_gc(5, Duration::from_secs(100000))?;
+    assert_eq!(store.get_store_stats()?.count, 10);
+    assert_eq!(store.get_store_stats()?.size, 10000);
+
+    // add some more stuff to exceed the size targets
+    for i in 10..15 {
+        let cid = cid(&format!("{}", i));
+        let data = data(&cid, 1000);
+        store.add_block(&cid, &data, vec![], None)?;
+    }
+
+    // check that gc gets triggered and removes min_blocks
+    store.incremental_gc(10, Duration::from_secs(100000))?;
+    assert_eq!(store.get_store_stats()?.count, 10);
+    assert_eq!(store.get_store_stats()?.size, 10000);
+
+    let cids = store.get_block_cids::<FnvHashSet<_>>()?;
+    // check that the 2 pinned ones are still there despite being added first
+    // and that only the 8 latest unpinned ones to be added remain
+    let expected_cids = (0..2)
+        .map(pinned)
+        .chain((7..15).map(unpinned))
+        .collect::<FnvHashSet<_>>();
+    assert_eq!(cids, expected_cids);
     Ok(())
 }
