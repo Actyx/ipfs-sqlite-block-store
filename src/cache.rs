@@ -1,6 +1,5 @@
-use std::{fmt::Debug, sync::{Arc, RwLock}, time::Instant};
-
-use libipld::{cache::Cache, Cid};
+use std::fmt::Debug;
+use libipld::Cid;
 
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
 #[allow(unused_variables)]

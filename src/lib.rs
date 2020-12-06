@@ -46,6 +46,12 @@ pub struct SizeTargets {
     pub size: u64,
 }
 
+impl SizeTargets {
+    pub fn new(count: u64, size: u64) -> Self {
+        Self { count, size }
+    }
+}
+
 #[derive(Debug)]
 pub struct Config {
     size_targets: SizeTargets,
@@ -58,6 +64,17 @@ impl Default for Config {
             size_targets: Default::default(),
             cache_tracker: Box::new(NoopCacheTracker),
         }
+    }
+}
+
+impl Config {
+    pub fn with_size_targets(mut self, size_targets: SizeTargets) -> Self {
+        self.size_targets = size_targets;
+        self
+    }
+    pub fn with_cache_tracker<T: CacheTracker + 'static>(mut self, cache_tracker: T) -> Self {
+        self.cache_tracker = Box::new(cache_tracker);
+        self
     }
 }
 
