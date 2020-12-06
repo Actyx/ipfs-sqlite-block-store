@@ -6,7 +6,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-
+mod db;
+pub use db::SqliteCacheTracker;
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
 #[allow(unused_variables)]
 pub trait CacheTracker: Debug {
@@ -64,7 +65,8 @@ pub trait KeySelector<T> {
 }
 
 impl<T, F> KeySelector<T> for F
-    where F: Fn(Duration, &Cid, &[u8]) -> Option<T>
+where
+    F: Fn(Duration, &Cid, &[u8]) -> Option<T>,
 {
     fn select(&self, access: Duration, cid: &Cid, data: &[u8]) -> Option<T> {
         (self)(access, cid, data)

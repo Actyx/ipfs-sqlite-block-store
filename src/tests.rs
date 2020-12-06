@@ -192,7 +192,7 @@ fn size_targets() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_sort_key_sort_order() {
+fn sort_key_sort_order() {
     assert!(
         SortKey::new(None, i64::max_value())
             < SortKey::new(Some(Duration::default()), i64::min_value())
@@ -200,7 +200,7 @@ fn test_sort_key_sort_order() {
 }
 
 #[test]
-fn in_mem_lru_cache() -> anyhow::Result<()> {
+fn in_mem_cache() -> anyhow::Result<()> {
     let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
 
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
@@ -255,8 +255,8 @@ fn in_mem_lru_cache() -> anyhow::Result<()> {
     // and that the recently accessed block is still there
     let expected_cids = (0..2)
         .map(pinned)
-        .chain((6..13).map(unpinned))
         .chain(Some(unpinned(0)))
+        .chain((6..13).map(unpinned))
         .collect::<FnvHashSet<_>>();
     assert_eq!(cids, expected_cids);
     Ok(())
