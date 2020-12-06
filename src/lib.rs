@@ -6,7 +6,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
-use cache::{CacheTracker, NoopCacheTracker};
+pub use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
@@ -293,6 +293,7 @@ impl Store {
         };
         Ok(log_execution_time("gc", Duration::from_secs(1), || {
             let size_targets = self.config.size_targets;
+            let cache_tracker = &mut self.config.cache_tracker;
             in_txn(&mut self.conn, move |txn| {
                 // get rid of dropped temp aliases, this should be fast
                 for id in expired_temp_aliases {
@@ -303,6 +304,7 @@ impl Store {
                     min_blocks,
                     max_duration,
                     size_targets,
+                    cache_tracker,
                 )?)
             })
         })?)
@@ -327,10 +329,11 @@ impl Store {
         blocks: impl IntoIterator<Item = B>,
         alias: Option<&TempAlias>,
     ) -> Result<()> {
-        let ids = in_txn(&mut self.conn, move |txn| {
+        let blocks = blocks.into_iter().collect::<Vec<_>>();
+        let written = in_txn(&mut self.conn, |txn| {
             let alias = alias.map(|alias| &alias.id);
             Ok(blocks
-                .into_iter()
+                .iter()
                 .map(|block| {
                     let cid_bytes = CidBytes::try_from(block.cid())?;
                     let links = block
@@ -338,15 +341,11 @@ impl Store {
                         .map(|x| CidBytes::try_from(&x))
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
                     let id = add_block(txn, &cid_bytes, &block.data(), links, alias)?;
-                    Ok((id, block))
+                    Ok((id, block.cid(), block.data()))
                 })
                 .collect::<Result<Vec<_>>>()?)
         })?;
-        for (id, block) in ids {
-            self.config
-                .cache_tracker
-                .block_written(id, block.cid(), block.data());
-        }
+        self.config.cache_tracker.blocks_written(&written);
         Ok(())
     }
     pub fn add_block<I>(
@@ -370,7 +369,7 @@ impl Store {
             // track the cache access
             self.config
                 .cache_tracker
-                .block_accessed(id, cid, block.as_ref());
+                .blocks_accessed(&[(id, cid, block.as_ref())]);
             block
         }))
     }

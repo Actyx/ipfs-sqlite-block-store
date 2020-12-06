@@ -1,37 +1,49 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::{Arc, RwLock}, time::Instant};
 
-use libipld::Cid;
+use libipld::{cache::Cache, Cid};
 
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
+#[allow(unused_variables)]
 pub trait CacheTracker: Debug {
-    /// called whenever a block is accessed
-    fn block_accessed(&mut self, id: i64, cid: &Cid, data: &[u8]);
-    /// called whenever a block is written, even if it already exists
-    fn block_written(&mut self, id: i64, cid: &Cid, data: &[u8]);
+    /// called whenever blocks were accessed
+    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {}
+    /// called whenever blocks were written
+    fn blocks_written(&mut self, blocks: &[(i64, &Cid, &[u8])]) {}
+    /// notification that these ids no longer have to be tracked
+    fn delete_ids(&mut self, ids: &[i64]) {}
+    /// notification that only these ids should be retained
+    fn retain_ids(&mut self, ids: &[i64]) {}
     /// sort ids by importance. More important ids should go to the end.
-    fn sort_ids(&self, ids: &mut [i64]);
+    fn sort_ids(&self, ids: &mut [i64]) {}
+}
+
+impl CacheTracker for Box<dyn CacheTracker> {
+    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
+        self.as_mut().blocks_accessed(blocks)
+    }
+
+    fn blocks_written(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
+        self.as_mut().blocks_written(blocks)
+    }
+
+    fn sort_ids(&self, ids: &mut [i64]) {
+        self.as_ref().sort_ids(ids)
+    }
 }
 
 /// a cache tracker that does nothing whatsoever, but is extremely fast
 #[derive(Debug)]
 pub struct NoopCacheTracker;
 
-impl CacheTracker for NoopCacheTracker {
-    fn block_accessed(&mut self, _id: i64, _cid: &Cid, _data: &[u8]) {}
-    fn block_written(&mut self, _id: i64, _cid: &Cid, _data: &[u8]) {}
-    fn sort_ids(&self, _ids: &mut [i64]) {}
-}
+impl CacheTracker for NoopCacheTracker {}
 
-impl CacheTracker for Box<dyn CacheTracker> {
-    fn block_accessed(&mut self, id: i64, cid: &Cid, data: &[u8]) {
-        self.as_mut().block_accessed(id, cid, data)
-    }
+/// a cache tracker that just sorts by id, which is the time of first addition of a block
+#[derive(Debug)]
+pub struct SortByIdCacheTracker;
 
-    fn block_written(&mut self, id: i64, cid: &Cid, data: &[u8]) {
-        self.as_mut().block_written(id, cid, data)
-    }
-
+impl CacheTracker for SortByIdCacheTracker {
     fn sort_ids(&self, ids: &mut [i64]) {
-        self.as_ref().sort_ids(ids)
+        // a bit faster than stable sort, and obviously for ids it does not matter
+        ids.sort_unstable();
     }
 }

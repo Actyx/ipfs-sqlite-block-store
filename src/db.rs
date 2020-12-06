@@ -23,7 +23,7 @@ use std::{
 };
 use tracing::*;
 
-use crate::{SizeTargets, StoreStats};
+use crate::{cache::CacheTracker, SizeTargets, StoreStats};
 
 const INIT: &str = r#"
 PRAGMA foreign_keys = ON;
@@ -31,6 +31,7 @@ PRAGMA journal_mode = WAL;
 -- PRAGMA synchronous = NORMAL;
 PRAGMA synchronous = FULL;
 PRAGMA page_size = 4096;
+-- PRAGMA locking_mode = EXCLUSIVE;
 -- PRAGMA page_size = 8192;
 -- PRAGMA page_size = 16384;
 -- PRAGMA synchronous = OFF;
@@ -164,6 +165,7 @@ pub(crate) fn incremental_gc(
     min_blocks: usize,
     max_duration: Duration,
     size_targets: SizeTargets,
+    cache_tracker: &mut impl CacheTracker,
 ) -> crate::Result<bool> {
     // get the store stats from the stats table
     let stats = get_store_stats(txn)?;
@@ -196,11 +198,13 @@ WHERE
     // min_blocks will ensure that we get some work done even if the id query takes too long
     let t0 = Instant::now();
     // log execution time of the non-interruptible query that computes the set of ids to delete
-    let ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
+    let mut ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
         id_query
             .query_map(NO_PARAMS, |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
+    // give the cache tracker the opportunity to sort the non-pinned ids by value
+    cache_tracker.sort_ids(&mut ids);
     let mut block_size_stmt =
         txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
     let mut update_stats_stmt =
@@ -221,6 +225,7 @@ WHERE
         delete_stmt.execute(&[id])?;
         n += 1;
     }
+    cache_tracker.delete_ids(&ids[0..n]);
     Ok(n == ids.len())
 }
 
