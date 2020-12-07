@@ -35,6 +35,14 @@ impl CacheTracker for Box<dyn CacheTracker> {
     fn sort_ids(&self, ids: &mut [i64]) {
         self.as_ref().sort_ids(ids)
     }
+
+    fn delete_ids(&mut self, ids: &[i64]) {
+        self.as_mut().delete_ids(ids)
+    }
+
+    fn retain_ids(&mut self, ids: &[i64]) {
+        self.as_mut().retain_ids(ids)
+    }
 }
 
 /// a cache tracker that does nothing whatsoever, but is extremely fast
