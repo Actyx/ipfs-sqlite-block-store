@@ -6,6 +6,8 @@ use fnv::FnvHashSet;
 use libipld::cid::Cid;
 use libipld::multihash::{Code, MultihashDigest};
 use std::time::Duration;
+use rusqlite::{params, Connection};
+use tempdir::TempDir;
 
 fn cid(name: &str) -> Cid {
     // https://github.com/multiformats/multicodec/blob/master/table.csv
@@ -259,5 +261,35 @@ fn in_mem_cache() -> anyhow::Result<()> {
         .chain((6..13).map(unpinned))
         .collect::<FnvHashSet<_>>();
     assert_eq!(cids, expected_cids);
+    Ok(())
+}
+
+const OLD_INIT: &str = r#"
+CREATE TABLE IF NOT EXISTS blocks (
+    key BLOB PRIMARY KEY,
+    pinned INTEGER DEFAULT 0,
+    cid BLOB,
+    data BLOB
+) WITHOUT ROWID;
+"#;
+
+#[test]
+fn test_migration() -> anyhow::Result<()> {
+    let tmp = TempDir::new("test_migration")?;
+    let path = tmp.path().join("db");
+    let conn = Connection::open(&path)?;
+    conn.execute_batch(OLD_INIT)?;
+    let mut blocks = Vec::with_capacity(5);
+    for i in 0..blocks.capacity() {
+        let data = (i as u64).to_be_bytes().to_vec();
+        let cid = Cid::new_v1(0x55, Code::Sha2_256.digest(&data));
+        conn.prepare_cached("INSERT INTO blocks (key, pinned, cid, data) VALUES (?1, 1, ?2, ?3)")?
+            .execute(params![cid.to_string(), cid.to_bytes(), data])?;
+        blocks.push((cid, data));
+    }
+    let mut store = Store::open(path, Config::default())?;
+    for (cid, data) in blocks {
+        assert_eq!(store.get_block(&cid)?, Some(data));
+    }
     Ok(())
 }
