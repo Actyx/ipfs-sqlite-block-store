@@ -8,6 +8,9 @@ use std::{
 };
 mod db;
 pub use db::SqliteCacheTracker;
+#[cfg(test)]
+mod tests;
+
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
 #[allow(unused_variables)]
 pub trait CacheTracker: Debug {
@@ -69,19 +72,6 @@ pub struct InMemCacheTracker<T, F> {
     created: Instant,
 }
 
-pub trait KeySelector<T> {
-    fn select(&self, access: Duration, cid: &Cid, data: &[u8]) -> Option<T>;
-}
-
-impl<T, F> KeySelector<T> for F
-where
-    F: Fn(Duration, &Cid, &[u8]) -> Option<T>,
-{
-    fn select(&self, access: Duration, cid: &Cid, data: &[u8]) -> Option<T> {
-        (self)(access, cid, data)
-    }
-}
-
 impl<T, F> InMemCacheTracker<T, F>
 where
     T: Ord + Clone + Debug,
@@ -106,7 +96,7 @@ where
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct SortKey<T: Ord> {
+struct SortKey<T: Ord> {
     time: Option<T>,
     id: i64,
 }
@@ -170,4 +160,14 @@ impl<T: Debug, F> std::fmt::Debug for InMemCacheTracker<T, F> {
             .field("cache", &self.cache.lock().unwrap())
             .finish()
     }
+}
+
+
+#[cfg(test)]
+#[test]
+fn sort_key_sort_order() {
+    assert!(
+        SortKey::new(None, i64::max_value())
+            < SortKey::new(Some(Duration::default()), i64::min_value())
+    );
 }

@@ -303,20 +303,22 @@ pub(crate) fn incremental_delete_orphaned(
         .collect::<rusqlite::Result<_>>()
     })?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?")?;
-    for (i, id) in ids.iter().enumerate() {
+    let mut n = 0;
+    for id in ids.iter() {
         let dt = t0.elapsed();
-        if i >= min_blocks && dt > max_duration {
+        if n >= min_blocks && dt > max_duration {
             info!(
                 "stopped incremental delete after {}us and {} blocks",
                 dt.as_micros(),
-                i
+                n
             );
-            return Ok(false);
+            break;
         }
         trace!("deleting block for id {}", id);
         delete_stmt.execute(&[id])?;
+        n += 1;
     }
-    Ok(true)
+    Ok(n == ids.len())
 }
 
 pub(crate) fn delete_temp_alias(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {

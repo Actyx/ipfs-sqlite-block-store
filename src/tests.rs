@@ -1,8 +1,5 @@
 #![allow(clippy::many_single_char_names)]
-use crate::{
-    cache::InMemCacheTracker, cache::SortByIdCacheTracker, cache::SortKey, Config, SizeTargets,
-    Store,
-};
+use crate::{cache::InMemCacheTracker, cache::SortByIdCacheTracker, Config, SizeTargets, Store};
 use fnv::FnvHashSet;
 use libipld::cid::Cid;
 use libipld::multihash::{Code, MultihashDigest};
@@ -192,14 +189,6 @@ fn size_targets() -> anyhow::Result<()> {
         .collect::<FnvHashSet<_>>();
     assert_eq!(cids, expected_cids);
     Ok(())
-}
-
-#[test]
-fn sort_key_sort_order() {
-    assert!(
-        SortKey::new(None, i64::max_value())
-            < SortKey::new(Some(Duration::default()), i64::min_value())
-    );
 }
 
 #[test]

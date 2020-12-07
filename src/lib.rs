@@ -79,10 +79,12 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Set size targets for the store
     pub fn with_size_targets(mut self, size_targets: SizeTargets) -> Self {
         self.size_targets = size_targets;
         self
     }
+    /// Set strategy for which non-pinned blocks to keep in case one of the size targets is exceeded.
     pub fn with_cache_tracker<T: CacheTracker + 'static>(mut self, cache_tracker: T) -> Self {
         self.cache_tracker = Box::new(cache_tracker);
         self
@@ -319,6 +321,7 @@ impl Store {
         Ok(res)
     }
 
+    /// Given a root of a dag, gives all cids which we do not have data for.
     pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let result = log_execution_time("get_missing_blocks", Duration::from_millis(10), || {
@@ -331,6 +334,10 @@ impl Store {
         Ok(res)
     }
 
+    /// do a full garbage collection
+    ///
+    /// for a large block store, this can take several seconds to minutes. If that is not acceptable,
+    /// consider using incremental gc.
     pub fn gc(&mut self) -> Result<()> {
         loop {
             let complete = self.incremental_gc(20000, Duration::from_secs(1))?;
@@ -341,6 +348,20 @@ impl Store {
         }
         Ok(())
     }
+    /// Perform an incremental garbage collection.
+    ///
+    /// Will collect unpinned blocks until either the size targets are met again, or at minimum
+    /// `min_blocks` blocks are collected. Then it will continue connecting blocks until `max_duration`
+    /// is elapsed.
+    ///
+    /// Note that this might significantly exceed `max_duration` for various reasons. Also note that
+    /// when doing incremental gc, the actual blocks are not yet deleted. So a call to this method
+    /// should usually be followed by a call to incremental_delete_orphaned.
+    ///
+    /// - `min_blocks` the minium number of blocks to collect in any case
+    /// - `max_duration` the maximum duration that should be spent on gc
+    ///
+    /// Returns true if either size targets are met or there are no unpinned blocks left.
     pub fn incremental_gc(&mut self, min_blocks: usize, max_duration: Duration) -> Result<bool> {
         // atomically grab the expired_temp_aliases until now
         let expired_temp_aliases = {
@@ -369,6 +390,20 @@ impl Store {
             })
         })?)
     }
+    /// Incrementally delete orphaned blocks
+    ///
+    /// Orphaned blocks are blocks for which we have deleted the metadata in `incremental_gc`.
+    ///
+    /// Will delete orphaned blocks until either all orphaned blocks are deleted, or at minimum
+    /// `min_blocks` blocks are deleted. Then it will continue deleting blocks until `max_duration`
+    /// is elapsed.
+    ///
+    /// Note that this might significantly exceed `max_duration` for various reasons.
+    ///
+    /// - `min_blocks` the minium number of blocks to delete in any case
+    /// - `max_duration` the maximum duration that should be spent on gc
+    ///
+    /// Returns true if all orphaned blocks are deleted
     pub fn incremental_delete_orphaned(
         &mut self,
         min_blocks: usize,
@@ -384,6 +419,19 @@ impl Store {
             },
         )?)
     }
+    /// Add a number of blocks to the store
+    ///
+    /// It is up to the caller to extract links from blocks. Also, the store does not know
+    /// anything about content-addressing and will not validate that the cid of a block is the
+    /// actual hash of the content.
+    ///
+    /// - `blocks` the blocks to add.
+    ///   Even we already have these blocks, the alias will be set. However, it will not be checked
+    ///   that the links or data are the same as last time the block was added. That is responsibility
+    ///   of the caller.
+    /// - `alias` an optional temporary alias.
+    ///   This can be used to incrementally add blocks without having to worry about them being garbage
+    ///   collected before they can be pinned with a permanent alias.
     pub fn add_blocks<B: Block>(
         &mut self,
         blocks: impl IntoIterator<Item = B>,
@@ -408,6 +456,15 @@ impl Store {
         self.config.cache_tracker.blocks_written(&written);
         Ok(())
     }
+    /// Add a single block
+    ///
+    /// this is just a convenience method that calls add_blocks internally.
+    ///
+    /// - `cid` the cid
+    ///   This should be a hash of the data, with some format specifier.
+    /// - `data` a blob
+    /// - `links` links extracted from the data
+    /// - `alias` an optional temporary alias
     pub fn add_block<I>(
         &mut self,
         cid: &Cid,
@@ -422,6 +479,9 @@ impl Store {
         self.add_blocks(Some(block), alias)?;
         Ok(())
     }
+    /// Get data for a block
+    ///
+    /// Will return None if we don't have the data
     pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         let cid_bytes = CidBytes::try_from(cid)?;
         let result = in_ro_txn(&self.conn, |txn| get_block(txn, cid_bytes))?;
