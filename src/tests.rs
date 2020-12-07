@@ -3,8 +3,10 @@ use crate::{
     cache::InMemCacheTracker, cache::SortByIdCacheTracker, BlockStore, Config, SizeTargets,
 };
 use fnv::FnvHashSet;
-use libipld::cid::Cid;
-use libipld::multihash::{Code, MultihashDigest};
+use libipld::{
+        cid::Cid,
+        multihash::{Code, MultihashDigest}
+};
 use rusqlite::{params, Connection};
 use std::time::Duration;
 use tempdir::TempDir;
@@ -288,7 +290,7 @@ fn test_migration() -> anyhow::Result<()> {
 
 #[test]
 fn test_reverse_alias() -> anyhow::Result<()> {
-    let mut store = Store::memory(Config::default())?;
+    let mut store = BlockStore::memory(Config::default())?;
     let cid = pinned(0);
     let data = data(&cid, 1);
     store.add_block(&cid, &data, vec![], None)?;
