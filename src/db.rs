@@ -488,6 +488,25 @@ pub(crate) fn alias<C: ToSql>(
     Ok(())
 }
 
+pub(crate) fn reverse_alias(txn: &Transaction, cid: impl ToSql) -> crate::Result<Vec<Vec<u8>>> {
+    let id = get_id(txn, cid)?;
+    Ok(txn
+        .prepare_cached(
+            r#"
+WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        SELECT ?
+        UNION ALL
+        SELECT DISTINCT parent_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.child_id
+    )
+SELECT DISTINCT name FROM descendant_of LEFT JOIN aliases ON descendant_of.id = block_id;
+"#,
+        )?
+        .query_map(params![id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?)
+}
+
 /// get all ids corresponding to cids that we have a block for
 pub(crate) fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
     Ok(txn
