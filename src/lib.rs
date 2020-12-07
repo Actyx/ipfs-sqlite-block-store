@@ -97,17 +97,27 @@ pub struct Store {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoreStats {
-    /// number of blocks, excluding orphaned blocks
     count: u64,
-    /// total size of blocks, excluding orphaned blocks
     size: u64,
 }
 
+impl StoreStats {
+
+    /// Total number of blocks in the store
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Total size of blocks in the store
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+// do not implement Clone for this!
 /// a handle that contains a temporary alias
 ///
 /// dropping this handle enqueue the alias for dropping before the next gc.
-///
-/// Note that implementing Clone for this would be a mistake.
 pub struct TempAlias {
     id: AtomicI64,
     expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
@@ -154,6 +164,7 @@ fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> Result<T>) ->
     f(&txn)
 }
 
+/// An ipfs block
 pub trait Block {
     type I: Iterator<Item = Cid>;
     fn cid(&self) -> &Cid;
@@ -161,6 +172,7 @@ pub trait Block {
     fn links(&self) -> Self::I;
 }
 
+/// Block that owns its data
 pub struct OwnedBlock {
     cid: Cid,
     data: Vec<u8>,
@@ -226,6 +238,8 @@ where
 }
 
 impl Store {
+
+    /// Create an in memory block store with the given config
     pub fn memory(config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn)?;
@@ -236,6 +250,7 @@ impl Store {
         })
     }
 
+    /// Create a persistent block store with the given config
     pub fn open(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn)?;
@@ -248,6 +263,7 @@ impl Store {
         })
     }
 
+    /// Get a temporary alias for safely adding blocks to the store
     pub fn temp_alias(&self) -> TempAlias {
         TempAlias {
             id: AtomicI64::new(0),
@@ -255,6 +271,7 @@ impl Store {
         }
     }
 
+    /// Add a permanent named alias/pin for a root
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
         let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
         in_txn(&mut self.conn, |txn| {
@@ -262,32 +279,41 @@ impl Store {
         })
     }
 
+    /// Checks if the store knows about the cid.
+    /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         in_ro_txn(&self.conn, |txn| has_cid(txn, cid))
     }
 
+    /// Checks if the store has the data for a cid    
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         in_ro_txn(&self.conn, |txn| has_block(txn, cid))
     }
 
+    /// Get the stats for the store.
+    ///
+    /// The stats are kept up to date, so this is fast.
     pub fn get_store_stats(&self) -> Result<StoreStats> {
         in_ro_txn(&self.conn, get_store_stats)
     }
 
+    /// Get all cids that the store knows about
     pub fn get_known_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
         let res = in_ro_txn(&self.conn, |txn| Ok(get_known_cids::<CidBytes>(txn)?))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
+    /// Get all cids for which the store has blocks
     pub fn get_block_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
         let res = in_ro_txn(&self.conn, |txn| Ok(get_block_cids::<CidBytes>(txn)?))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
+    /// Get descendants of a cid
     pub fn get_descendants<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let res = in_ro_txn(&self.conn, move |txn| get_descendants(txn, cid))?;
