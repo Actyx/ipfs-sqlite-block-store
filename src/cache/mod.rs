@@ -66,6 +66,7 @@ impl CacheTracker for SortByIdCacheTracker {
 pub struct InMemCacheTracker<T, F> {
     cache: Arc<Mutex<FnvHashMap<i64, T>>>,
     mk_cache_entry: F,
+    created: Instant,
 }
 
 pub trait KeySelector<T> {
@@ -99,6 +100,7 @@ where
         Self {
             cache: Arc::new(Mutex::new(FnvHashMap::default())),
             mk_cache_entry,
+            created: Instant::now(),
         }
     }
 }
@@ -129,7 +131,7 @@ where
 {
     /// called whenever blocks were accessed
     fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
-        let now = Instant::now().elapsed();
+        let now = Instant::now().checked_duration_since(self.created).unwrap();
         let mut cache = self.cache.lock().unwrap();
         for (id, cid, data) in blocks {
             if let Some(value) = (self.mk_cache_entry)(now, cid, data) {
