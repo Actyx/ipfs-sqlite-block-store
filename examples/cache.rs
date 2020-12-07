@@ -1,8 +1,14 @@
+use std::time::Instant;
+
+use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
 use sqlite_block_store::{
-    cache::InMemCacheTracker, cache::SqliteCacheTracker, Config, SizeTargets, Store,
+    cache::InMemCacheTracker, cache::NoopCacheTracker, cache::SqliteCacheTracker, Config,
+    OwnedBlock, SizeTargets, Store,
 };
+use tracing::*;
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 fn cid(name: &str) -> Cid {
     // https://github.com/multiformats/multicodec/blob/master/table.csv
@@ -24,24 +30,44 @@ fn data(cid: &Cid, n: usize) -> Vec<u8> {
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_span_events(FmtSpan::CLOSE)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
     // a tracker that only cares about access time
-    let tracker =
-        SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
+    // let tracker =
+    SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
+    let tracker = NoopCacheTracker;
     let mut store = Store::open(
         "cache-test.sqlite",
         Config::default()
             .with_size_targets(SizeTargets::new(1000, 1000000))
             .with_cache_tracker(tracker),
     )?;
-    for i in 0..100000 {
-        let cid = unpinned(i);
-        store.add_block(&cid, &data(&cid, 10000), vec![], None)?;
+    for is in &(0..100000).chunks(1000) {
+        info!("adding 1000 blocks");
+        let blocks = is
+            .map(|i| {
+                let cid = unpinned(i);
+                let data = data(&cid, 10000);
+                OwnedBlock::new(cid, data, vec![])
+            })
+            .collect::<Vec<_>>();
+        store.add_blocks(blocks, None)?;
     }
-    for _ in 0..10 {
+    let mut sum = 0usize;
+    let t0 = Instant::now();
+    for j in 0..10 {
+        info!("Accessing all blocks, round {}", j);
         for i in 0..10000 {
-            store.get_block(&unpinned(i))?;
+            sum += store
+                .get_block(&unpinned(i))?
+                .map(|x| x.len())
+                .unwrap_or_default();
         }
     }
+    let dt = t0.elapsed();
+    info!("total accessed {} in {}s", sum, dt.as_secs_f64());
     Ok(())
 }
