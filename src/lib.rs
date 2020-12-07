@@ -279,6 +279,12 @@ impl BlockStore {
         })
     }
 
+    /// Returns the aliases referencing a block.
+    pub fn reverse_alias(&mut self, cid: &Cid) -> crate::Result<Vec<Vec<u8>>> {
+        let cid = CidBytes::try_from(cid)?;
+        in_txn(&mut self.conn, |txn| reverse_alias(txn, cid.as_ref()))
+    }
+
     /// Checks if the store knows about the cid.
     /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&self, cid: &Cid) -> Result<bool> {

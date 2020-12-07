@@ -285,3 +285,21 @@ fn test_migration() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn test_reverse_alias() -> anyhow::Result<()> {
+    let mut store = Store::memory(Config::default())?;
+    let cid = pinned(0);
+    let data = data(&cid, 1);
+    store.add_block(&cid, &data, vec![], None)?;
+    store.alias(&b"leaf"[..], Some(&cid))?;
+    assert_eq!(store.reverse_alias(&cid)?, vec![b"leaf".to_vec()]);
+    let cid2 = pinned(1);
+    store.add_block(&cid2, &data, vec![cid], None)?;
+    store.alias(&b"root"[..], Some(&cid2))?;
+    assert_eq!(
+        store.reverse_alias(&cid)?,
+        vec![b"leaf".to_vec(), b"root".to_vec()]
+    );
+    Ok(())
+}
