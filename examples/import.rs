@@ -2,7 +2,7 @@ use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
 use rusqlite::{params, Connection, OpenFlags};
-use sqlite_block_store::{Config, OwnedBlock, Store};
+use ipfs_sqlite_block_store::{Config, OwnedBlock, Store};
 use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;
@@ -32,7 +32,7 @@ pub struct OldBlock {
 
 pub struct IpldBlock(libipld::Block<DefaultParams>);
 
-impl sqlite_block_store::Block for IpldBlock {
+impl ipfs_sqlite_block_store::Block for IpldBlock {
     type I = std::vec::IntoIter<Cid>;
 
     fn cid(&self) -> &Cid {

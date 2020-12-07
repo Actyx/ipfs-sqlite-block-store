@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use libipld::cid::Cid;
 use multihash::{Code, MultihashDigest};
-use sqlite_block_store::{Block, Config, OwnedBlock, Store};
+use ipfs_sqlite_block_store::{Block, Config, OwnedBlock, Store};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 fn cid(name: &str) -> Cid {

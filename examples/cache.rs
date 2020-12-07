@@ -3,7 +3,7 @@ use std::time::Instant;
 use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
-use sqlite_block_store::{
+use ipfs_sqlite_block_store::{
     cache::InMemCacheTracker, cache::NoopCacheTracker, cache::SqliteCacheTracker, Config,
     OwnedBlock, SizeTargets, Store,
 };
@@ -35,17 +35,17 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     // a tracker that only cares about access time
-    // let tracker =
-    SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
+    let tracker = SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
-    let tracker = NoopCacheTracker;
+    // let tracker = NoopCacheTracker;
     let mut store = Store::open(
         "cache-test.sqlite",
         Config::default()
             .with_size_targets(SizeTargets::new(1000, 1000000))
             .with_cache_tracker(tracker),
     )?;
-    for is in &(0..100000).chunks(1000) {
+    let n = 100000;
+    for is in &(0..n).chunks(1000) {
         info!("adding 1000 blocks");
         let blocks = is
             .map(|i| {
@@ -57,17 +57,19 @@ fn main() -> anyhow::Result<()> {
         store.add_blocks(blocks, None)?;
     }
     let mut sum = 0usize;
+    let mut count = 0usize;
     let t0 = Instant::now();
     for j in 0..10 {
         info!("Accessing all blocks, round {}", j);
-        for i in 0..10000 {
+        for i in 0..n {
             sum += store
                 .get_block(&unpinned(i))?
                 .map(|x| x.len())
                 .unwrap_or_default();
+            count += 1;
         }
     }
     let dt = t0.elapsed();
-    info!("total accessed {} in {}s", sum, dt.as_secs_f64());
+    info!("total accessed {} bytes, {} blocks, in {}s", sum, count, dt.as_secs_f64());
     Ok(())
 }
