@@ -1,11 +1,14 @@
 #![allow(clippy::many_single_char_names)]
 use crate::{
-    cache::InMemCacheTracker, cache::SortByIdCacheTracker, BlockStore, Config, SizeTargets,
+    cache::CacheTracker,
+    cache::InMemCacheTracker,
+    cache::{SortByIdCacheTracker, SqliteCacheTracker},
+    BlockStore, Config, SizeTargets,
 };
 use fnv::FnvHashSet;
 use libipld::{
-        cid::Cid,
-        multihash::{Code, MultihashDigest}
+    cid::Cid,
+    multihash::{Code, MultihashDigest},
 };
 use rusqlite::{params, Connection};
 use std::time::Duration;
@@ -196,8 +199,20 @@ fn size_targets() -> anyhow::Result<()> {
 }
 
 #[test]
-fn in_mem_cache() -> anyhow::Result<()> {
-    let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
+fn in_mem_cache_tracker() -> anyhow::Result<()> {
+    cache_test(InMemCacheTracker::new(|access, _, _| Some(access)))
+}
+
+#[test]
+fn sqlite_cache_tracker() -> anyhow::Result<()> {
+    cache_test(SqliteCacheTracker::open(
+        "access.sqlite",
+        |access, _, _| Some(access),
+    )?)
+}
+
+fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
+    // let tracker = ;
 
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
     let mut store = BlockStore::memory(

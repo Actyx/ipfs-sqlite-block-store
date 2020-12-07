@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
         let blocks = is
             .map(|i| {
                 let cid = unpinned(i);
-                let data = data(&cid, 10000);
+                let data = data(&cid, 1000);
                 OwnedBlock::new(cid, data, vec![])
             })
             .collect::<Vec<_>>();
@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
     let mut sum = 0usize;
     let mut count = 0usize;
     let t0 = Instant::now();
-    for j in 0..10 {
+    for j in 0..2 {
         info!("Accessing all blocks, round {}", j);
         for i in 0..n {
             sum += store
@@ -76,5 +76,6 @@ fn main() -> anyhow::Result<()> {
         count,
         dt.as_secs_f64()
     );
+    store.gc()?;
     Ok(())
 }

@@ -1,13 +1,13 @@
-use fnv::FnvHashSet;
+use super::CacheTracker;
+use fnv::{FnvHashMap, FnvHashSet};
 use libipld::Cid;
-use rusqlite::{Connection, OptionalExtension, Transaction, NO_PARAMS};
+use rusqlite::{Connection, Transaction, NO_PARAMS};
 use std::{
     fmt::Debug,
     path::Path,
-    time::{Duration, SystemTime},
+    time::{Instant, SystemTime},
 };
-
-use super::CacheTracker;
+use tracing::*;
 
 pub struct SqliteCacheTracker<F> {
     conn: Connection,
@@ -54,12 +54,26 @@ fn set_accessed(txn: &Transaction, id: i64, accessed: i64) -> crate::Result<()> 
     Ok(())
 }
 
-fn get_accessed(txn: &Transaction, id: i64) -> crate::Result<Option<i64>> {
-    let accessed = txn
-        .prepare_cached("SELECT FROM accessed WHERE id = ?")?
-        .query_row(&[id], |row| row.get(0))
-        .optional()?;
-    Ok(accessed)
+fn get_accessed_bulk(
+    txn: &Transaction,
+    result: &mut FnvHashMap<i64, Option<i64>>,
+) -> crate::Result<()> {
+    let mut stmt = txn.prepare_cached("SELECT id, time FROM accessed")?;
+    let accessed = stmt.query_map(NO_PARAMS, |row| {
+        let id: i64 = row.get(0)?;
+        let time: i64 = row.get(1)?;
+        Ok((id, time))
+    })?;
+    // we have no choice but to run through all values in accessed.
+    for row in accessed {
+        // only add if a row already exists
+        if let Ok((id, time)) = row {
+            if let Some(value) = result.get_mut(&id) {
+                *value = Some(time);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn delete_id(txn: &Transaction, id: i64) -> crate::Result<()> {
@@ -78,7 +92,7 @@ fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
 
 impl<F> SqliteCacheTracker<F>
 where
-    F: Fn(Duration, &Cid, &[u8]) -> Option<Duration>,
+    F: Fn(i64, &Cid, &[u8]) -> Option<i64>,
 {
     pub fn memory(mk_cache_entry: F) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
@@ -113,16 +127,17 @@ impl SortKey {
 
 impl<F> CacheTracker for SqliteCacheTracker<F>
 where
-    F: Fn(Duration, &Cid, &[u8]) -> Option<Duration>,
+    F: Fn(i64, &Cid, &[u8]) -> Option<i64>,
 {
     fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
         let accessed = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
+        let nanos = accessed.as_nanos() as i64;
         let items = blocks
             .iter()
             .filter_map(|(id, cid, data)| {
-                (self.mk_cache_entry)(accessed, cid, data).map(|accessed| (id, accessed))
+                (self.mk_cache_entry)(nanos, cid, data).map(|nanos| (id, nanos))
             })
             .collect::<Vec<_>>();
         if items.is_empty() {
@@ -130,7 +145,7 @@ where
         }
         attempt_txn(&mut self.conn, |txn| {
             for (id, accessed) in items {
-                set_accessed(txn, *id, accessed.as_secs() as i64)?;
+                set_accessed(txn, *id, accessed as i64)?;
             }
             Ok(())
         });
@@ -159,14 +174,16 @@ where
 
     fn sort_ids(&self, ids: &mut [i64]) {
         attempt_ro_txn(&self.conn, |txn| {
-            let mut keys = Vec::new();
-            for id in ids.iter() {
-                keys.push(SortKey::new(get_accessed(txn, *id)?, *id));
-            }
-            keys.sort_unstable();
-            for i in 0..ids.len() {
-                ids[i] = keys[i].id;
-            }
+            let t0 = Instant::now();
+            let mut accessed = ids
+                .iter()
+                .map(|id| (*id, None))
+                .collect::<FnvHashMap<i64, Option<i64>>>();
+            get_accessed_bulk(txn, &mut accessed)?;
+            debug!("getting access times took {}", t0.elapsed().as_micros());
+            let t0 = Instant::now();
+            ids.sort_by_cached_key(|id| SortKey::new(accessed.get(id).cloned().flatten(), *id));
+            debug!("sorting ids took {}", t0.elapsed().as_micros());
             Ok(())
         });
     }
