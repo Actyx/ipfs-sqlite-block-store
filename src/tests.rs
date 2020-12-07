@@ -1,3 +1,4 @@
+#![allow(clippy::many_single_char_names)]
 use crate::{
     cache::InMemCacheTracker, cache::SortByIdCacheTracker, cache::SortKey, Config, SizeTargets,
     Store,
@@ -5,8 +6,8 @@ use crate::{
 use fnv::FnvHashSet;
 use libipld::cid::Cid;
 use libipld::multihash::{Code, MultihashDigest};
-use std::time::Duration;
 use rusqlite::{params, Connection};
+use std::time::Duration;
 use tempdir::TempDir;
 
 fn cid(name: &str) -> Cid {
@@ -15,11 +16,11 @@ fn cid(name: &str) -> Cid {
     Cid::new_v1(0x71, hash)
 }
 
-fn pb(name: &str) -> Cid {
+/*fn pb(name: &str) -> Cid {
     // https://github.com/multiformats/multicodec/blob/master/table.csv
     let hash = Code::Sha2_256.digest(name.as_bytes());
     Cid::new_v1(0x70, hash)
-}
+}*/
 
 fn unpinned(i: usize) -> Cid {
     cid(&format!("{}", i))
@@ -34,7 +35,7 @@ fn data(cid: &Cid, n: usize) -> Vec<u8> {
     let text = cid.to_string();
     let bytes = text.as_bytes();
     let len = res.len().min(bytes.len());
-    &res[0..len].copy_from_slice(&bytes[0..len]);
+    res[0..len].copy_from_slice(&bytes[0..len]);
     res
 }
 

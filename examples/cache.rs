@@ -4,7 +4,7 @@ use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
 use ipfs_sqlite_block_store::{
-    cache::InMemCacheTracker, cache::NoopCacheTracker, cache::SqliteCacheTracker, Config,
+    cache::NoopCacheTracker, cache::SqliteCacheTracker, Config,
     OwnedBlock, SizeTargets, Store,
 };
 use tracing::*;
@@ -25,7 +25,7 @@ fn data(cid: &Cid, n: usize) -> Vec<u8> {
     let text = cid.to_string();
     let bytes = text.as_bytes();
     let len = res.len().min(bytes.len());
-    &res[0..len].copy_from_slice(&bytes[0..len]);
+    res[0..len].copy_from_slice(&bytes[0..len]);
     res
 }
 

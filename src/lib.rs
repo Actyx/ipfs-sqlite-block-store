@@ -419,7 +419,7 @@ impl Store {
     where
         I: IntoIterator<Item = Cid> + Clone,
     {
-        let block = BorrowedBlock::new(cid.clone(), data, move || links.clone().into_iter());
+        let block = BorrowedBlock::new(*cid, data, move || links.clone().into_iter());
         self.add_blocks(Some(block), alias)?;
         Ok(())
     }

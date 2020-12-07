@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     let block_iter = block_iter.map(|block| {
-        block.map_err(|e| anyhow::Error::from(e)).and_then(|block| {
+        block.map_err(anyhow::Error::from).and_then(|block| {
             let key = Cid::try_from(String::from_utf8(block.key)?)?;
             let cid = Cid::try_from(block.cid)?;
             assert_eq!(key.hash(), cid.hash());
