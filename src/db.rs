@@ -16,11 +16,14 @@ use rusqlite::{
     NO_PARAMS,
 };
 use std::{
+    convert::TryFrom,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
     time::Instant,
 };
 use tracing::*;
+
+use crate::{cache::CacheTracker, SizeTargets, StoreStats};
 
 const INIT: &str = r#"
 PRAGMA foreign_keys = ON;
@@ -28,6 +31,7 @@ PRAGMA journal_mode = WAL;
 -- PRAGMA synchronous = NORMAL;
 PRAGMA synchronous = FULL;
 PRAGMA page_size = 4096;
+-- PRAGMA locking_mode = EXCLUSIVE;
 -- PRAGMA page_size = 8192;
 -- PRAGMA page_size = 16384;
 -- PRAGMA synchronous = OFF;
@@ -122,12 +126,29 @@ fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
         .optional()
 }
 
-/// returns the number and size of blocks, excluding orphaned blocks
-pub(crate) fn get_block_count_and_size(txn: &Transaction) -> rusqlite::Result<(i64, i64)> {
-    txn.prepare(
+/// returns the number and size of blocks, excluding orphaned blocks, computed from scratch
+pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
+    let (count, size): (i64, i64) = txn.prepare(
         "SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id",
     )?
-    .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))
+    .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(StoreStats {
+        count: u64::try_from(count)?,
+        size: u64::try_from(size)?,
+    })
+}
+
+/// returns the number and size of blocks, excluding orphaned blocks, from the stats table
+pub(crate) fn get_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
+    let (count, size): (i64, i64) = txn
+        .prepare_cached("SELECT count, size FROM stats LIMIT 1")?
+        .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let result = StoreStats {
+        count: u64::try_from(count)?,
+        size: u64::try_from(size)?,
+    };
+    debug_assert_eq!(result, compute_store_stats(txn)?);
+    Ok(result)
 }
 
 fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64> {
@@ -145,7 +166,15 @@ pub(crate) fn incremental_gc(
     txn: &Transaction,
     min_blocks: usize,
     max_duration: Duration,
-) -> rusqlite::Result<bool> {
+    size_targets: SizeTargets,
+    cache_tracker: &mut impl CacheTracker,
+) -> crate::Result<bool> {
+    // get the store stats from the stats table
+    let mut stats = get_store_stats(txn)?;
+    // if we don't exceed any of the size targets, there is nothing to do
+    if !size_targets.exceeded(&stats) {
+        return Ok(true);
+    }
     // find all ids that have neither a parent nor are aliased
     let mut id_query = txn.prepare_cached(
         r#"
@@ -166,18 +195,25 @@ WHERE
     // min_blocks will ensure that we get some work done even if the id query takes too long
     let t0 = Instant::now();
     // log execution time of the non-interruptible query that computes the set of ids to delete
-    let ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
+    let mut ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
         id_query
             .query_map(NO_PARAMS, |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
+    // give the cache tracker the opportunity to sort the non-pinned ids by value
+    cache_tracker.sort_ids(&mut ids);
     let mut block_size_stmt =
         txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
-    let mut update_stats_stmt = txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?;
+    let mut update_stats_stmt =
+        txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
-    for (i, id) in ids.iter().enumerate() {
-        if i >= min_blocks && t0.elapsed() > max_duration {
-            return Ok(false);
+    let mut n = 0;
+    for id in ids.iter() {
+        if n >= min_blocks && t0.elapsed() > max_duration {
+            break;
+        }
+        if !size_targets.exceeded(&stats) {
+            break;
         }
         trace!("deleting id {}", id);
         let block_size: Option<i64> = block_size_stmt
@@ -185,10 +221,14 @@ WHERE
             .optional()?;
         if let Some(block_size) = block_size {
             update_stats_stmt.execute(&[block_size])?;
+            stats.count -= 1;
+            stats.size -= block_size as u64;
         }
         delete_stmt.execute(&[id])?;
+        n += 1;
     }
-    Ok(true)
+    cache_tracker.delete_ids(&ids[0..n]);
+    Ok(n == ids.len() || !size_targets.exceeded(&stats))
 }
 
 /// deletes the orphaned blocks.
@@ -243,7 +283,7 @@ pub(crate) fn add_block<C: ToSql>(
     data: &[u8],
     links: impl IntoIterator<Item = C>,
     alias: Option<&AtomicI64>,
-) -> rusqlite::Result<bool> {
+) -> crate::Result<i64> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
@@ -286,23 +326,27 @@ pub(crate) fn add_block<C: ToSql>(
             insert_ref.execute(params![id, child_id])?;
         }
     }
-    Ok(true)
+    Ok(id)
 }
 
 /// Get a block
-pub(crate) fn get_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<Vec<u8>>> {
+pub(crate) fn get_block(
+    txn: &Transaction,
+    cid: impl ToSql,
+) -> crate::Result<Option<(i64, Vec<u8>)>> {
     let id = get_id(&txn, cid)?;
     Ok(if let Some(id) = id {
         txn.prepare_cached("SELECT block FROM blocks WHERE block_id = ?")?
             .query_row(&[id], |row| row.get(0))
             .optional()?
+            .map(|b| (id, b))
     } else {
         None
     })
 }
 
 /// Check if we have a block
-pub(crate) fn has_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
+pub(crate) fn has_block(txn: &Transaction, cid: impl ToSql) -> crate::Result<bool> {
     Ok(txn
         .prepare_cached(
             "SELECT 1 FROM blocks, cids WHERE blocks.block_id = cids.id AND cids.cid = ?",
@@ -313,7 +357,7 @@ pub(crate) fn has_block(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<
 }
 
 /// Check if we have a cid
-pub(crate) fn has_cid(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bool> {
+pub(crate) fn has_cid(txn: &Transaction, cid: impl ToSql) -> crate::Result<bool> {
     Ok(txn
         .prepare_cached("SELECT 1 FROM cids WHERE cids.cid = ?")?
         .query_row(&[cid], |_| Ok(()))
@@ -327,7 +371,7 @@ pub(crate) fn has_cid(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<bo
 pub(crate) fn get_descendants<C: ToSql + FromSql>(
     txn: &Transaction,
     cid: C,
-) -> rusqlite::Result<Vec<C>> {
+) -> crate::Result<Vec<C>> {
     let res = txn
         .prepare_cached(
             r#"
@@ -356,7 +400,7 @@ WITH RECURSIVE
 pub(crate) fn get_missing_blocks<C: ToSql + FromSql>(
     txn: &Transaction,
     cid: C,
-) -> rusqlite::Result<Vec<C>> {
+) -> crate::Result<Vec<C>> {
     let id = get_or_create_id(&txn, cid)?;
     let res = txn.prepare_cached(
         r#"
@@ -384,7 +428,7 @@ pub(crate) fn alias<C: ToSql>(
     txn: &Transaction,
     name: &[u8],
     key: Option<&C>,
-) -> rusqlite::Result<()> {
+) -> crate::Result<()> {
     if let Some(key) = key {
         let id = get_or_create_id(txn, key)?;
         txn.prepare_cached("REPLACE INTO aliases (name, block_id) VALUES (?, ?)")?
@@ -396,14 +440,31 @@ pub(crate) fn alias<C: ToSql>(
     Ok(())
 }
 
-pub(crate) fn get_cids<C: FromSql>(txn: &Transaction) -> rusqlite::Result<Vec<C>> {
+/// get all ids corresponding to cids that we have a block for
+pub(crate) fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
+    Ok(txn
+        .prepare_cached(r#"SELECT id FROM cids, blocks WHERE id = block_id"#)?
+        .query_map(NO_PARAMS, |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?)
+}
+
+/// get all cids of blocks in the store
+pub(crate) fn get_block_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<C>> {
+    Ok(txn
+        .prepare_cached(r#"SELECT cid FROM cids, blocks WHERE id = block_id"#)?
+        .query_map(NO_PARAMS, |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<C>>>()?)
+}
+
+/// get all cids that we know about, even ones that we don't have a block for
+pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<C>> {
     Ok(txn
         .prepare_cached(r#"SELECT cid FROM cids"#)?
         .query_map(NO_PARAMS, |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
-pub(crate) fn init_db(conn: &mut Connection) -> rusqlite::Result<()> {
+pub(crate) fn init_db(conn: &mut Connection) -> crate::Result<()> {
     conn.execute_batch(INIT)?;
     assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
     Ok(())

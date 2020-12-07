@@ -2,7 +2,7 @@ use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
 use rusqlite::{params, Connection, OpenFlags};
-use sqlite_block_store::{CidBlock, Store};
+use sqlite_block_store::{Config, OwnedBlock, Store};
 use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;
@@ -32,7 +32,7 @@ pub struct OldBlock {
 
 pub struct IpldBlock(libipld::Block<DefaultParams>);
 
-impl sqlite_block_store::Block<Cid> for IpldBlock {
+impl sqlite_block_store::Block for IpldBlock {
     type I = std::vec::IntoIter<Cid>;
 
     fn cid(&self) -> &Cid {
@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     let roots = Path::new(&args[1]);
     let blocks = Path::new(&args[2]);
     let output = Path::new("out.sqlite");
-    let mut store = Store::open(output)?;
+    let mut store = Store::open(output, Config::default())?;
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", params![], |row| row.get(0))?;
@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
             let mut refs = Vec::new();
             block.references(&mut refs)?;
             let (cid, data) = block.into_inner();
-            Ok(CidBlock::new(cid, data, refs))
+            Ok(OwnedBlock::new(cid, data, refs))
         })
     });
 
@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
-    for (i, cid) in store.get_cids::<Vec<_>>()?.iter().enumerate() {
+    for (i, cid) in store.get_block_cids::<Vec<_>>()?.iter().enumerate() {
         if i % 1000 == 0 {
             info!("iterating {} {}", cid, i);
         }
@@ -127,7 +127,7 @@ fn main() -> anyhow::Result<()> {
 
     let now = std::time::Instant::now();
     let mut len = 0usize;
-    for (i, cid) in store.get_cids::<Vec<_>>()?.iter().enumerate() {
+    for (i, cid) in store.get_block_cids::<Vec<_>>()?.iter().enumerate() {
         if i % 1000 == 0 {
             info!("iterating {} {}", cid, i);
         }

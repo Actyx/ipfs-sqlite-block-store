@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use libipld::cid::Cid;
 use multihash::{Code, MultihashDigest};
-use sqlite_block_store::{Block, CidBlock, Store};
+use sqlite_block_store::{Block, Config, OwnedBlock, Store};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 fn cid(name: &str) -> Cid {
@@ -22,7 +22,7 @@ fn build_tree_0(
     prefix: &str,
     branch: u64,
     depth: u64,
-    blocks: &mut Vec<CidBlock>,
+    blocks: &mut Vec<OwnedBlock>,
 ) -> anyhow::Result<Cid> {
     let node = cid(prefix);
     let data_size = if depth == 0 { 1024 * 16 } else { 1024 };
@@ -38,19 +38,19 @@ fn build_tree_0(
         }
         children
     };
-    let block = CidBlock::new(node, data, children);
+    let block = OwnedBlock::new(node, data, children);
     let cid = block.cid().clone();
     blocks.push(block);
     Ok(cid)
 }
 
-fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Cid, Vec<CidBlock>)> {
+fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Cid, Vec<OwnedBlock>)> {
     let mut tmp = Vec::new();
     let res = build_tree_0(prefix, branch, depth, &mut tmp)?;
     Ok((res, tmp))
 }
 
-fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<CidBlock>)> {
+fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<OwnedBlock>)> {
     assert!(n > 0);
     let mut blocks = Vec::with_capacity(n);
     let mk_node = |i: usize| cid(&format!("{}-{}", prefix, i));
@@ -60,7 +60,7 @@ fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<CidBlock>)> {
         let node = mk_node(i);
         let data = mk_data(i);
         let links = prev.iter().map(|x| x.clone()).collect::<Vec<Cid>>();
-        blocks.push(CidBlock::new(node, data, links));
+        blocks.push(OwnedBlock::new(node, data, links));
         prev = Some(node);
     }
     Ok((prev.unwrap(), blocks))
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
         .with_span_events(FmtSpan::CLOSE)
         .with_env_filter(EnvFilter::from_default_env())
         .init();
-    let mut store = Store::open("test.sqlite")?;
+    let mut store = Store::open("test.sqlite", Config::default())?;
     for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
