@@ -494,13 +494,13 @@ pub(crate) fn reverse_alias(txn: &Transaction, cid: impl ToSql) -> crate::Result
         .prepare_cached(
             r#"
 WITH RECURSIVE
-    descendant_of(id) AS
+    ancestor_of(id) AS
     (
         SELECT ?
         UNION ALL
-        SELECT DISTINCT parent_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.child_id
+        SELECT DISTINCT parent_id FROM refs JOIN ancestor_of WHERE ancestor_of.id=refs.child_id
     )
-SELECT DISTINCT name FROM descendant_of LEFT JOIN aliases ON descendant_of.id = block_id;
+SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = block_id;
 "#,
         )?
         .query_map(params![id], |row| row.get(0))?
