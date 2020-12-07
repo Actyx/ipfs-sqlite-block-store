@@ -91,7 +91,7 @@ impl Config {
     }
 }
 
-pub struct Store {
+pub struct BlockStore {
     conn: Connection,
     expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
     config: Config,
@@ -238,7 +238,7 @@ where
     }
 }
 
-impl Store {
+impl BlockStore {
     /// Create an in memory block store with the given config
     pub fn memory(config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open_in_memory()?;

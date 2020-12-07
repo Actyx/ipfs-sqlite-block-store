@@ -1,4 +1,4 @@
-use ipfs_sqlite_block_store::{Config, OwnedBlock, Store};
+use ipfs_sqlite_block_store::{BlockStore, Config, OwnedBlock};
 use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     let roots = Path::new(&args[1]);
     let blocks = Path::new(&args[2]);
     let output = Path::new("out.sqlite");
-    let mut store = Store::open(output, Config::default())?;
+    let mut store = BlockStore::open(output, Config::default())?;
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", params![], |row| row.get(0))?;

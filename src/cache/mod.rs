@@ -162,7 +162,6 @@ impl<T: Debug, F> std::fmt::Debug for InMemCacheTracker<T, F> {
     }
 }
 
-
 #[cfg(test)]
 #[test]
 fn sort_key_sort_order() {

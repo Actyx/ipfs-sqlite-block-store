@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use ipfs_sqlite_block_store::{Block, Config, OwnedBlock, Store};
+use ipfs_sqlite_block_store::{Block, BlockStore, Config, OwnedBlock};
 use libipld::cid::Cid;
 use multihash::{Code, MultihashDigest};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
         .with_span_events(FmtSpan::CLOSE)
         .with_env_filter(EnvFilter::from_default_env())
         .init();
-    let mut store = Store::open("test.sqlite", Config::default())?;
+    let mut store = BlockStore::open("test.sqlite", Config::default())?;
     for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;

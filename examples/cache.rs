@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use ipfs_sqlite_block_store::{cache::SqliteCacheTracker, Config, OwnedBlock, SizeTargets, Store};
+use ipfs_sqlite_block_store::{
+    cache::SqliteCacheTracker, BlockStore, Config, OwnedBlock, SizeTargets,
+};
 use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
@@ -36,7 +38,7 @@ fn main() -> anyhow::Result<()> {
         SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
     // let tracker = NoopCacheTracker;
-    let mut store = Store::open(
+    let mut store = BlockStore::open(
         "cache-test.sqlite",
         Config::default()
             .with_size_targets(SizeTargets::new(1000, 1000000))

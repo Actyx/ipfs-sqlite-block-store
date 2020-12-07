@@ -1,5 +1,7 @@
 #![allow(clippy::many_single_char_names)]
-use crate::{cache::InMemCacheTracker, cache::SortByIdCacheTracker, Config, SizeTargets, Store};
+use crate::{
+    cache::InMemCacheTracker, cache::SortByIdCacheTracker, BlockStore, Config, SizeTargets,
+};
 use fnv::FnvHashSet;
 use libipld::cid::Cid;
 use libipld::multihash::{Code, MultihashDigest};
@@ -38,7 +40,7 @@ fn data(cid: &Cid, n: usize) -> Vec<u8> {
 
 #[test]
 fn insert_get() -> anyhow::Result<()> {
-    let mut store = Store::memory(Config::default())?;
+    let mut store = BlockStore::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
@@ -71,7 +73,7 @@ fn insert_get() -> anyhow::Result<()> {
 
 #[test]
 fn incremental_insert() -> anyhow::Result<()> {
-    let mut store = Store::memory(Config::default())?;
+    let mut store = BlockStore::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
@@ -116,7 +118,7 @@ fn incremental_insert() -> anyhow::Result<()> {
 
 #[test]
 fn temp_alias() -> anyhow::Result<()> {
-    let mut store = Store::memory(Config::default())?;
+    let mut store = BlockStore::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
     let alias = store.temp_alias();
@@ -140,7 +142,7 @@ fn temp_alias() -> anyhow::Result<()> {
 #[test]
 fn size_targets() -> anyhow::Result<()> {
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
-    let mut store = Store::memory(
+    let mut store = BlockStore::memory(
         Config::default()
             .with_size_targets(SizeTargets::new(10, 10000))
             .with_cache_tracker(SortByIdCacheTracker),
@@ -196,7 +198,7 @@ fn in_mem_cache() -> anyhow::Result<()> {
     let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
 
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
-    let mut store = Store::memory(
+    let mut store = BlockStore::memory(
         Config::default()
             .with_size_targets(SizeTargets::new(10, 10000))
             .with_cache_tracker(tracker),
@@ -277,7 +279,7 @@ fn test_migration() -> anyhow::Result<()> {
             .execute(params![cid.to_string(), cid.to_bytes(), data])?;
         blocks.push((cid, data));
     }
-    let mut store = Store::open(path, Config::default())?;
+    let mut store = BlockStore::open(path, Config::default())?;
     for (cid, data) in blocks {
         assert_eq!(store.get_block(&cid)?, Some(data));
     }

@@ -1,5 +1,5 @@
-use std::time::Duration;
 use super::SortKey;
+use std::time::Duration;
 
 #[cfg(test)]
 #[test]
