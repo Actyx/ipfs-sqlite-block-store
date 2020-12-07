@@ -1,8 +1,8 @@
 use std::time::Instant;
 
+use ipfs_sqlite_block_store::{Block, Config, OwnedBlock, Store};
 use libipld::cid::Cid;
 use multihash::{Code, MultihashDigest};
-use ipfs_sqlite_block_store::{Block, Config, OwnedBlock, Store};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 fn cid(name: &str) -> Cid {
@@ -39,7 +39,7 @@ fn build_tree_0(
         children
     };
     let block = OwnedBlock::new(node, data, children);
-    let cid = block.cid().clone();
+    let cid = *block.cid();
     blocks.push(block);
     Ok(cid)
 }
@@ -59,7 +59,7 @@ fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<OwnedBlock>)>
     for i in 0..n {
         let node = mk_node(i);
         let data = mk_data(i);
-        let links = prev.iter().map(|x| x.clone()).collect::<Vec<Cid>>();
+        let links = prev.iter().copied().collect::<Vec<Cid>>();
         blocks.push(OwnedBlock::new(node, data, links));
         prev = Some(node);
     }

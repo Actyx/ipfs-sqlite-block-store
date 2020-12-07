@@ -11,11 +11,13 @@
 //! alias: table that contains named pins for roots of graphs that should not be deleted by gc
 //!    you can alias incomplete or in fact non-existing data. It is not necessary for a pinned dag
 //!    to be complete.
+use libipld::{Cid, DefaultParams};
 use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
 use std::{
+    collections::BTreeSet,
     convert::TryFrom,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
@@ -25,7 +27,7 @@ use tracing::*;
 
 use crate::{cache::CacheTracker, SizeTargets, StoreStats};
 
-const INIT: &str = r#"
+const PRAGMAS: &str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 -- PRAGMA synchronous = NORMAL;
@@ -36,6 +38,10 @@ PRAGMA page_size = 4096;
 -- PRAGMA page_size = 16384;
 -- PRAGMA synchronous = OFF;
 -- PRAGMA journal_mode = MEMORY;
+"#;
+
+const INIT: &str = r#"
+PRAGMA user_version = 1;
 
 CREATE TABLE IF NOT EXISTS cids (
     id INTEGER PRIMARY KEY,
@@ -119,6 +125,48 @@ INSERT INTO stats (count, size) VALUES (
     (SELECT COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id)
 );
 "#;
+
+fn user_version(txn: &Transaction) -> rusqlite::Result<u32> {
+    Ok(txn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .optional()?
+        .unwrap_or_default())
+}
+
+fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
+    let num: u32 = txn
+        .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1;")?
+        .query_row(params![table], |row| row.get(0))?;
+    Ok(num > 0)
+}
+
+fn migrate_from_v0(txn: &Transaction) -> anyhow::Result<()> {
+    txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0")?;
+    txn.execute_batch(INIT)?;
+    let mut stmt = txn.prepare("SELECT * FROM blocks_v0")?;
+    let block_iter = stmt.query_map(params![], |row| {
+        Ok((row.get::<_, Vec<u8>>(2)?, row.get::<_, Vec<u8>>(3)?))
+    })?;
+    for block in block_iter {
+        let (cid, data) = block?;
+        let cid = Cid::try_from(cid)?;
+        let block = libipld::Block::<DefaultParams>::new(cid, data)?;
+        let mut set = BTreeSet::new();
+        block.references(&mut set)?;
+        add_block(
+            &txn,
+            &block.cid().to_bytes(),
+            block.data(),
+            set.into_iter()
+                .map(|cid| cid.to_bytes())
+                .collect::<Vec<_>>(),
+            None,
+        )?;
+    }
+    txn.execute_batch("DROP TABLE blocks_v0")?;
+    drop(stmt);
+    Ok(())
+}
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
     txn.prepare_cached("SELECT id FROM cids WHERE cid=?")?
@@ -464,8 +512,15 @@ pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
-pub(crate) fn init_db(conn: &mut Connection) -> crate::Result<()> {
-    conn.execute_batch(INIT)?;
+pub(crate) fn init_db(conn: &mut Connection) -> anyhow::Result<()> {
+    conn.execute_batch(PRAGMAS)?;
+    let txn = conn.transaction()?;
+    if user_version(&txn)? == 0 && table_exists(&txn, "blocks")? {
+        migrate_from_v0(&txn)?;
+    } else {
+        txn.execute_batch(INIT)?;
+    }
+    txn.commit()?;
     assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
     Ok(())
 }

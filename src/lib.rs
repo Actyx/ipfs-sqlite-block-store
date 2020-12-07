@@ -102,7 +102,6 @@ pub struct StoreStats {
 }
 
 impl StoreStats {
-
     /// Total number of blocks in the store
     pub fn count(&self) -> u64 {
         self.count
@@ -238,9 +237,8 @@ where
 }
 
 impl Store {
-
     /// Create an in memory block store with the given config
-    pub fn memory(config: Config) -> crate::Result<Self> {
+    pub fn memory(config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn)?;
         Ok(Self {
@@ -251,7 +249,7 @@ impl Store {
     }
 
     /// Create a persistent block store with the given config
-    pub fn open(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn)?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
@@ -286,7 +284,7 @@ impl Store {
         in_ro_txn(&self.conn, |txn| has_cid(txn, cid))
     }
 
-    /// Checks if the store has the data for a cid    
+    /// Checks if the store has the data for a cid
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         in_ro_txn(&self.conn, |txn| has_block(txn, cid))
@@ -420,7 +418,7 @@ impl Store {
     where
         I: IntoIterator<Item = Cid> + Clone,
     {
-        let block = BorrowedBlock::new(cid.clone(), data, move || links.clone().into_iter());
+        let block = BorrowedBlock::new(*cid, data, move || links.clone().into_iter());
         self.add_blocks(Some(block), alias)?;
         Ok(())
     }
