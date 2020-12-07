@@ -102,7 +102,6 @@ pub struct StoreStats {
 }
 
 impl StoreStats {
-
     /// Total number of blocks in the store
     pub fn count(&self) -> u64 {
         self.count

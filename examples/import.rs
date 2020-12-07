@@ -1,8 +1,8 @@
+use ipfs_sqlite_block_store::{Config, OwnedBlock, Store};
 use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
 use rusqlite::{params, Connection, OpenFlags};
-use ipfs_sqlite_block_store::{Config, OwnedBlock, Store};
 use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;

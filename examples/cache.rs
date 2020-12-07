@@ -1,12 +1,9 @@
 use std::time::Instant;
 
+use ipfs_sqlite_block_store::{cache::SqliteCacheTracker, Config, OwnedBlock, SizeTargets, Store};
 use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
-use ipfs_sqlite_block_store::{
-    cache::NoopCacheTracker, cache::SqliteCacheTracker, Config,
-    OwnedBlock, SizeTargets, Store,
-};
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
@@ -35,7 +32,8 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     // a tracker that only cares about access time
-    let tracker = SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
+    let tracker =
+        SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
     // let tracker = NoopCacheTracker;
     let mut store = Store::open(
@@ -70,6 +68,11 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let dt = t0.elapsed();
-    info!("total accessed {} bytes, {} blocks, in {}s", sum, count, dt.as_secs_f64());
+    info!(
+        "total accessed {} bytes, {} blocks, in {}s",
+        sum,
+        count,
+        dt.as_secs_f64()
+    );
     Ok(())
 }
