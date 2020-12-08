@@ -533,8 +533,13 @@ pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
-pub(crate) fn init_db(conn: &mut Connection) -> anyhow::Result<()> {
+pub(crate) fn init_db(conn: &mut Connection, is_memory: bool) -> anyhow::Result<()> {
     conn.execute_batch(PRAGMAS)?;
+    let foreign_keys: i64 = conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    let journal_mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    let expected_journal_mode = if is_memory { "memory" } else { "wal" };
+    assert_eq!(foreign_keys, 1);
+    assert_eq!(journal_mode, expected_journal_mode.to_owned());
     let txn = conn.transaction()?;
     if user_version(&txn)? == 0 && table_exists(&txn, "blocks")? {
         migrate_from_v0(&txn)?;

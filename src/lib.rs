@@ -242,7 +242,7 @@ impl BlockStore {
     /// Create an in memory block store with the given config
     pub fn memory(config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
-        init_db(&mut conn)?;
+        init_db(&mut conn, true)?;
         Ok(Self {
             conn,
             expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
@@ -253,7 +253,7 @@ impl BlockStore {
     /// Create a persistent block store with the given config
     pub fn open(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open(path)?;
-        init_db(&mut conn)?;
+        init_db(&mut conn, false)?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
