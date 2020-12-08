@@ -1,6 +1,5 @@
-use super::CacheTracker;
+use super::{BlockInfo, CacheTracker};
 use fnv::{FnvHashMap, FnvHashSet};
-use libipld::Cid;
 use rusqlite::{Connection, Transaction, NO_PARAMS};
 use std::{
     fmt::Debug,
@@ -9,6 +8,7 @@ use std::{
 };
 use tracing::*;
 
+/// A cache tracker that uses a sqlite database as persistent storage
 pub struct SqliteCacheTracker<F> {
     conn: Connection,
     mk_cache_entry: F,
@@ -92,7 +92,7 @@ fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
 
 impl<F> SqliteCacheTracker<F>
 where
-    F: Fn(i64, &Cid, &[u8]) -> Option<i64>,
+    F: Fn(i64, BlockInfo) -> Option<i64>,
 {
     pub fn memory(mk_cache_entry: F) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
@@ -127,25 +127,23 @@ impl SortKey {
 
 impl<F> CacheTracker for SqliteCacheTracker<F>
 where
-    F: Fn(i64, &Cid, &[u8]) -> Option<i64>,
+    F: Fn(i64, BlockInfo) -> Option<i64>,
 {
-    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
+    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         let accessed = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
         let nanos = accessed.as_nanos() as i64;
         let items = blocks
             .iter()
-            .filter_map(|(id, cid, data)| {
-                (self.mk_cache_entry)(nanos, cid, data).map(|nanos| (id, nanos))
-            })
+            .filter_map(|block| (self.mk_cache_entry)(nanos, *block).map(|nanos| (block.id, nanos)))
             .collect::<Vec<_>>();
         if items.is_empty() {
             return;
         }
         attempt_txn(&mut self.conn, |txn| {
             for (id, accessed) in items {
-                set_accessed(txn, *id, accessed as i64)?;
+                set_accessed(txn, id, accessed as i64)?;
             }
             Ok(())
         });

@@ -6,7 +6,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
-use cache::{CacheTracker, NoopCacheTracker};
+use cache::{BlockInfo, CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
@@ -443,11 +443,10 @@ impl BlockStore {
         blocks: impl IntoIterator<Item = B>,
         alias: Option<&TempAlias>,
     ) -> Result<()> {
-        let blocks = blocks.into_iter().collect::<Vec<_>>();
-        let written = in_txn(&mut self.conn, |txn| {
+        let infos = in_txn(&mut self.conn, |txn| {
             let alias = alias.map(|alias| &alias.id);
             Ok(blocks
-                .iter()
+                .into_iter()
                 .map(|block| {
                     let cid_bytes = CidBytes::try_from(block.cid())?;
                     let links = block
@@ -455,11 +454,11 @@ impl BlockStore {
                         .map(|x| CidBytes::try_from(&x))
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
                     let id = add_block(txn, &cid_bytes, &block.data(), links, alias)?;
-                    Ok((id, block.cid(), block.data()))
+                    Ok(BlockInfo::new(id, block.cid(), block.data()))
                 })
                 .collect::<Result<Vec<_>>>()?)
         })?;
-        self.config.cache_tracker.blocks_written(&written);
+        self.config.cache_tracker.blocks_written(infos);
         Ok(())
     }
     /// Add a single block
@@ -495,7 +494,7 @@ impl BlockStore {
             // track the cache access
             self.config
                 .cache_tracker
-                .blocks_accessed(&[(id, cid, block.as_ref())]);
+                .blocks_accessed(vec![BlockInfo::new(id, cid, block.as_ref())]);
             block
         }))
     }

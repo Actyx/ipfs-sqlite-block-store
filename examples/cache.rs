@@ -1,11 +1,14 @@
-use std::time::Instant;
-
 use ipfs_sqlite_block_store::{
-    cache::SqliteCacheTracker, BlockStore, Config, OwnedBlock, SizeTargets,
+    cache::{
+        AsyncCacheTracker, BlockInfo, CacheTracker, InMemCacheTracker, NoopCacheTracker, Spawner,
+        SqliteCacheTracker,
+    },
+    BlockStore, Config, OwnedBlock, SizeTargets,
 };
 use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
+use std::time::Instant;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
@@ -28,14 +31,23 @@ fn data(cid: &Cid, n: usize) -> Vec<u8> {
     res
 }
 
-fn main() -> anyhow::Result<()> {
+struct TokioSpawner;
+
+impl Spawner for TokioSpawner {
+    fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static) {
+        tokio::task::spawn_blocking(|| f());
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     // a tracker that only cares about access time
-    let tracker =
-        SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
+    let tracker = SqliteCacheTracker::open("cache-test-access.sqlite", |access, _| Some(access))?;
+    let tracker = AsyncCacheTracker::new(TokioSpawner, tracker);
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
     // let tracker = NoopCacheTracker;
     let mut store = BlockStore::open(
