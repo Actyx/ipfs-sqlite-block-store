@@ -4,10 +4,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Wrapper around a spawn function
 pub trait Spawner {
+    /// Called by the cache tracker to spawn a small, blocking, io bound task
     fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static);
 }
 
+/// A wrapping cache tracker that performs write operations on another thread
 pub struct AsyncCacheTracker<S, T> {
     spawner: S,
     inner: Arc<Mutex<T>>,
@@ -33,29 +36,28 @@ where
     S: Spawner,
     T: CacheTracker + Send + 'static,
 {
-    /// called whenever blocks were accessed
     fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
             inner.lock().unwrap().blocks_accessed(blocks);
         });
     }
-    /// called whenever blocks were written
+
     fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
             inner.lock().unwrap().blocks_written(blocks);
         });
     }
-    /// notification that these ids no longer have to be tracked
+
     fn delete_ids(&mut self, ids: &[i64]) {
         self.inner.lock().unwrap().delete_ids(ids);
     }
-    /// notification that only these ids should be retained
+
     fn retain_ids(&mut self, ids: &[i64]) {
         self.inner.lock().unwrap().retain_ids(ids);
     }
-    /// sort ids by importance. More important ids should go to the end.
+
     fn sort_ids(&self, ids: &mut [i64]) {
         self.inner.lock().unwrap().sort_ids(ids);
     }

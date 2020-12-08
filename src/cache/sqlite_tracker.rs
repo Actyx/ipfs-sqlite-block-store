@@ -8,6 +8,7 @@ use std::{
 };
 use tracing::*;
 
+/// A cache tracker that uses a sqlite database as persistent storage
 pub struct SqliteCacheTracker<F> {
     conn: Connection,
     mk_cache_entry: F,

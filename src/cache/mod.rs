@@ -13,6 +13,9 @@ pub use sqlite_tracker::SqliteCacheTracker;
 #[cfg(test)]
 mod tests;
 
+/// Information about a block that is quick to gather
+///
+/// This is what is available for making decisions about whether to cache a block
 #[derive(Debug, Clone, Copy)]
 pub struct BlockInfo {
     /// id of the block in the block store
@@ -46,15 +49,31 @@ impl BlockInfo {
 #[allow(unused_variables)]
 pub trait CacheTracker: Debug {
     /// called whenever blocks were accessed
+    ///
+    /// note that this method will be called very frequently, on every block access.
+    /// it is fire and forget, so it is perfectly ok to offload the writing to another thread.
     fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {}
+
     /// called whenever blocks were written
+    ///
+    /// note that this method will be called frequently, on every block write.
+    /// it is fire and forget, so it is perfectly ok to offload the writing to another thread.
+
     fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {}
     /// notification that these ids no longer have to be tracked
+    ///
+    /// this will be called from inside gc
     fn delete_ids(&mut self, ids: &[i64]) {}
-    /// notification that only these ids should be retained
-    fn retain_ids(&mut self, ids: &[i64]) {}
+
     /// sort ids by importance. More important ids should go to the end.
+    ///
+    /// this will be called from inside gc
     fn sort_ids(&self, ids: &mut [i64]) {}
+
+    /// notification that only these ids should be retained
+    ///
+    /// this will be called once during startup
+    fn retain_ids(&mut self, ids: &[i64]) {}
 }
 
 impl CacheTracker for Box<dyn CacheTracker> {
