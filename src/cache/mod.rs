@@ -47,7 +47,7 @@ impl BlockInfo {
 
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
 #[allow(unused_variables)]
-pub trait CacheTracker: Debug {
+pub trait CacheTracker: Debug + Send {
     /// called whenever blocks were accessed
     ///
     /// note that this method will be called very frequently, on every block access.
@@ -166,8 +166,8 @@ fn get_key<T: Ord + Clone>(
 
 impl<T, F> CacheTracker for InMemCacheTracker<T, F>
 where
-    T: Ord + Clone + Debug,
-    F: Fn(Duration, BlockInfo) -> Option<T>,
+    T: Ord + Clone + Debug + Send,
+    F: Fn(Duration, BlockInfo) -> Option<T> + Send,
 {
     /// called whenever blocks were accessed
     fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {

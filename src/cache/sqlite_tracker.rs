@@ -127,7 +127,7 @@ impl SortKey {
 
 impl<F> CacheTracker for SqliteCacheTracker<F>
 where
-    F: Fn(i64, BlockInfo) -> Option<i64>,
+    F: Fn(i64, BlockInfo) -> Option<i64> + Send,
 {
     fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         let accessed = SystemTime::now()

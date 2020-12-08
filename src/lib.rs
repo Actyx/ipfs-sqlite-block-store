@@ -1,3 +1,4 @@
+mod async_block_store;
 pub mod cache;
 mod cidbytes;
 mod db;

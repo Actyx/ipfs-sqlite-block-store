@@ -16,6 +16,7 @@ multihash = { version = "0.13.1", default-features = false, features = ["sha2"] 
 rusqlite = "0.24.1"
 tracing = "0.1.22"
 fnv = "1.0.7"
+futures = "0.3.8"
 
 [dev-dependencies]
 libipld = { version = "0.8.2", default-features = false, features = ["dag-cbor"] }
