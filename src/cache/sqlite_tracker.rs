@@ -135,9 +135,7 @@ where
         let nanos = accessed.as_nanos() as i64;
         let items = blocks
             .iter()
-            .filter_map(|block| {
-                (self.mk_cache_entry)(nanos, *block).map(|nanos| (block.id, nanos))
-            })
+            .filter_map(|block| (self.mk_cache_entry)(nanos, *block).map(|nanos| (block.id, nanos)))
             .collect::<Vec<_>>();
         if items.is_empty() {
             return;

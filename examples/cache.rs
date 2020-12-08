@@ -1,75 +1,16 @@
-use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
-    time::Instant,
+use ipfs_sqlite_block_store::{
+    cache::{
+        AsyncCacheTracker, BlockInfo, CacheTracker, InMemCacheTracker, NoopCacheTracker, Spawner,
+        SqliteCacheTracker,
+    },
+    BlockStore, Config, OwnedBlock, SizeTargets,
 };
-
-use ipfs_sqlite_block_store::{BlockStore, Config, OwnedBlock, SizeTargets, cache::{BlockInfo, CacheTracker, InMemCacheTracker, NoopCacheTracker, SqliteCacheTracker}};
 use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
+use std::time::Instant;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
-
-struct AsyncCacheTracker<S, T> {
-    spawner: S,
-    inner: Arc<Mutex<T>>,
-}
-
-impl<S, T> Debug for AsyncCacheTracker<S, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AsyncCacheTracker").finish()
-    }
-}
-
-impl<S: Spawner, T: CacheTracker> AsyncCacheTracker<S, T> {
-    pub fn new(spawner: S, inner: T) -> Self {
-        Self {
-            spawner,
-            inner: Arc::new(Mutex::new(inner)),
-        }
-    }
-}
-
-trait Spawner {
-    fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static);
-}
-
-struct TokioSpawner;
-
-impl Spawner for TokioSpawner {
-    fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static) {
-        tokio::task::spawn_blocking(|| f());
-    }
-}
-
-impl<S, T> CacheTracker for AsyncCacheTracker<S, T>
-where
-    S: Spawner,
-    T: CacheTracker + Send + 'static,
-{
-    /// called whenever blocks were accessed
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
-        let inner = self.inner.clone();
-        self.spawner.spawn_blocking(move || {
-            inner.lock().unwrap().blocks_accessed(blocks);
-        });
-    }
-    /// called whenever blocks were written
-    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {}
-    /// notification that these ids no longer have to be tracked
-    fn delete_ids(&mut self, ids: &[i64]) {
-        self.inner.lock().unwrap().delete_ids(ids);
-    }
-    /// notification that only these ids should be retained
-    fn retain_ids(&mut self, ids: &[i64]) {
-        self.inner.lock().unwrap().retain_ids(ids);
-    }
-    /// sort ids by importance. More important ids should go to the end.
-    fn sort_ids(&self, ids: &mut [i64]) {
-        self.inner.lock().unwrap().sort_ids(ids);
-    }
-}
 
 fn cid(name: &str) -> Cid {
     // https://github.com/multiformats/multicodec/blob/master/table.csv
@@ -90,6 +31,14 @@ fn data(cid: &Cid, n: usize) -> Vec<u8> {
     res
 }
 
+struct TokioSpawner;
+
+impl Spawner for TokioSpawner {
+    fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static) {
+        tokio::task::spawn_blocking(|| f());
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -97,8 +46,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     // a tracker that only cares about access time
-    let tracker =
-        SqliteCacheTracker::open("cache-test-access.sqlite", |access, _| Some(access))?;
+    let tracker = SqliteCacheTracker::open("cache-test-access.sqlite", |access, _| Some(access))?;
     let tracker = AsyncCacheTracker::new(TokioSpawner, tracker);
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
     // let tracker = NoopCacheTracker;

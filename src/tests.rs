@@ -205,10 +205,9 @@ fn in_mem_cache_tracker() -> anyhow::Result<()> {
 
 #[test]
 fn sqlite_cache_tracker() -> anyhow::Result<()> {
-    cache_test(SqliteCacheTracker::open(
-        "access.sqlite",
-        |access, _| Some(access),
-    )?)
+    cache_test(SqliteCacheTracker::open("access.sqlite", |access, _| {
+        Some(access)
+    })?)
 }
 
 fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {

@@ -6,8 +6,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-mod db;
-pub use db::SqliteCacheTracker;
+mod async_tracker;
+mod sqlite_tracker;
+pub use async_tracker::{AsyncCacheTracker, Spawner};
+pub use sqlite_tracker::SqliteCacheTracker;
 #[cfg(test)]
 mod tests;
 
@@ -35,7 +37,7 @@ impl BlockInfo {
     pub fn codec(&self) -> u64 {
         self.codec
     }
-    pub fn len(&self) -> usize {
+    pub fn block_len(&self) -> usize {
         self.len
     }
 }
