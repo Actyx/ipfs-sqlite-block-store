@@ -5,7 +5,7 @@ use std::{
 };
 
 /// Wrapper around a spawn function
-pub trait Spawner {
+pub trait Spawner: Send {
     /// Called by the cache tracker to spawn a small, blocking, io bound task
     fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static);
 }
