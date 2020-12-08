@@ -38,7 +38,7 @@ pub trait Unblocker {
 }
 
 impl<U: Unblocker> AsyncBlockStore<U> {
-    fn new(unblocker: U, inner: BlockStore) -> Self {
+    pub fn new(unblocker: U, inner: BlockStore) -> Self {
         Self {
             unblocker,
             inner: Arc::new(Mutex::new(inner)),
@@ -128,6 +128,20 @@ impl<U: Unblocker> AsyncBlockStore<U> {
         self.unblock(move |store| {
             let alias = borrowed(&alias).map(|x| x.0.as_ref());
             store.add_blocks(blocks, alias)
+        })
+        .await
+    }
+
+    pub async fn add_block(
+        &self,
+        cid: Cid,
+        data: Vec<u8>,
+        links: Vec<Cid>,
+        alias: Option<AsyncTempAlias>,
+    ) -> crate::Result<()> {
+        self.unblock(move |store| {
+            let alias = borrowed(&alias).map(|x| x.0.as_ref());
+            store.add_block(&cid, data.as_ref(), links, alias)
         })
         .await
     }

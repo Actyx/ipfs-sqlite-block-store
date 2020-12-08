@@ -1,11 +1,13 @@
 #![allow(clippy::many_single_char_names)]
 use crate::{
+    async_block_store::{AsyncBlockStore, Unblocker},
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
     BlockStore, Config, SizeTargets,
 };
 use fnv::FnvHashSet;
+use futures::prelude::*;
 use libipld::{
     cid::Cid,
     multihash::{Code, MultihashDigest},
@@ -122,29 +124,6 @@ fn incremental_insert() -> anyhow::Result<()> {
 }
 
 #[test]
-fn temp_alias() -> anyhow::Result<()> {
-    let mut store = BlockStore::memory(Config::default())?;
-    let a = cid("a");
-    let b = cid("b");
-    let alias = store.temp_alias();
-
-    store.add_block(&a, b"abcd", vec![], Some(&alias))?;
-    store.gc()?;
-    assert!(store.has_block(&a)?);
-
-    store.add_block(&b, b"fubar", vec![], Some(&alias))?;
-    store.gc()?;
-    assert!(store.has_block(&b)?);
-
-    drop(alias);
-    store.gc()?;
-    assert!(!store.has_block(&a)?);
-    assert!(!store.has_block(&b)?);
-
-    Ok(())
-}
-
-#[test]
 fn size_targets() -> anyhow::Result<()> {
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
     let mut store = BlockStore::memory(
@@ -205,9 +184,7 @@ fn in_mem_cache_tracker() -> anyhow::Result<()> {
 
 #[test]
 fn sqlite_cache_tracker() -> anyhow::Result<()> {
-    cache_test(SqliteCacheTracker::memory(|access, _| {
-        Some(access)
-    })?)
+    cache_test(SqliteCacheTracker::memory(|access, _| Some(access))?)
 }
 
 fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
@@ -317,5 +294,68 @@ fn test_reverse_alias() -> anyhow::Result<()> {
         store.reverse_alias(&cid)?,
         vec![b"leaf".to_vec(), b"root".to_vec()]
     );
+    Ok(())
+}
+
+struct TokioUblocker;
+
+impl Unblocker for TokioUblocker {
+    fn unblock<F, T>(&self, f: F) -> futures::future::BoxFuture<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        async { tokio::task::spawn_blocking(f).await.unwrap() }.boxed()
+    }
+}
+
+#[test]
+fn temp_alias() -> anyhow::Result<()> {
+    let mut store = BlockStore::memory(Config::default())?;
+    let a = cid("a");
+    let b = cid("b");
+    let alias = store.temp_alias();
+
+    store.add_block(&a, b"abcd", vec![], Some(&alias))?;
+    store.gc()?;
+    assert!(store.has_block(&a)?);
+
+    store.add_block(&b, b"fubar", vec![], Some(&alias))?;
+    store.gc()?;
+    assert!(store.has_block(&b)?);
+
+    drop(alias);
+    store.gc()?;
+    assert!(!store.has_block(&a)?);
+    assert!(!store.has_block(&b)?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn temp_alias_async() -> anyhow::Result<()> {
+    let store = BlockStore::memory(Config::default())?;
+    let store = AsyncBlockStore::new(TokioUblocker, store);
+    let a = cid("a");
+    let b = cid("b");
+    let alias = store.temp_alias().await;
+
+    store
+        .add_block(a, b"abcd".to_vec(), vec![], Some(alias.clone()))
+        .await?;
+    store.gc().await?;
+    assert!(store.has_block(a).await?);
+
+    store
+        .add_block(b, b"fubar".to_vec(), vec![], Some(alias.clone()))
+        .await?;
+    store.gc().await?;
+    assert!(store.has_block(b).await?);
+
+    drop(alias);
+    store.gc().await?;
+    assert!(!store.has_block(a).await?);
+    assert!(!store.has_block(b).await?);
+
     Ok(())
 }
