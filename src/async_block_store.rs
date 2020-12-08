@@ -19,13 +19,6 @@ impl AsyncTempAlias {
     }
 }
 
-fn borrowed<'a, T>(x: &'a Option<T>) -> Option<&'a T> {
-    match x {
-        Some(v) => Some(v),
-        None => None,
-    }
-}
-
 /// a temp alias that can be freely cloned and shared
 #[derive(Debug, Clone)]
 pub struct AsyncTempAlias(Arc<TempAlias>);
@@ -51,7 +44,7 @@ impl<U: Unblocker> AsyncBlockStore<U> {
     }
 
     pub async fn alias(&self, name: Vec<u8>, link: Option<Cid>) -> crate::Result<()> {
-        self.unblock(move |store| store.alias(&name, borrowed(&link)))
+        self.unblock(move |store| store.alias(&name, link.as_ref()))
             .await
     }
 
@@ -126,7 +119,7 @@ impl<U: Unblocker> AsyncBlockStore<U> {
         alias: Option<AsyncTempAlias>,
     ) -> crate::Result<()> {
         self.unblock(move |store| {
-            let alias = borrowed(&alias).map(|x| x.0.as_ref());
+            let alias = alias.as_ref().map(|x| x.0.as_ref());
             store.add_blocks(blocks, alias)
         })
         .await
@@ -140,7 +133,7 @@ impl<U: Unblocker> AsyncBlockStore<U> {
         alias: Option<AsyncTempAlias>,
     ) -> crate::Result<()> {
         self.unblock(move |store| {
-            let alias = borrowed(&alias).map(|x| x.0.as_ref());
+            let alias = alias.as_ref().map(|x| x.0.as_ref());
             store.add_block(&cid, data.as_ref(), links, alias)
         })
         .await
