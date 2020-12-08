@@ -200,14 +200,14 @@ fn size_targets() -> anyhow::Result<()> {
 
 #[test]
 fn in_mem_cache_tracker() -> anyhow::Result<()> {
-    cache_test(InMemCacheTracker::new(|access, _, _| Some(access)))
+    cache_test(InMemCacheTracker::new(|access, _| Some(access)))
 }
 
 #[test]
 fn sqlite_cache_tracker() -> anyhow::Result<()> {
     cache_test(SqliteCacheTracker::open(
         "access.sqlite",
-        |access, _, _| Some(access),
+        |access, _| Some(access),
     )?)
 }
 

@@ -11,13 +11,42 @@ pub use db::SqliteCacheTracker;
 #[cfg(test)]
 mod tests;
 
+#[derive(Debug, Clone, Copy)]
+pub struct BlockInfo {
+    /// id of the block in the block store
+    id: i64,
+    /// ipld codec, see https://github.com/multiformats/multicodec/blob/master/table.csv
+    codec: u64,
+    /// size of the block
+    len: usize,
+}
+
+impl BlockInfo {
+    pub fn new(id: i64, cid: &Cid, data: &[u8]) -> Self {
+        Self {
+            id,
+            codec: cid.codec(),
+            len: data.len(),
+        }
+    }
+    pub fn id(&self) -> i64 {
+        self.id
+    }
+    pub fn codec(&self) -> u64 {
+        self.codec
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
 #[allow(unused_variables)]
 pub trait CacheTracker: Debug {
     /// called whenever blocks were accessed
-    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {}
+    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {}
     /// called whenever blocks were written
-    fn blocks_written(&mut self, blocks: &[(i64, &Cid, &[u8])]) {}
+    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {}
     /// notification that these ids no longer have to be tracked
     fn delete_ids(&mut self, ids: &[i64]) {}
     /// notification that only these ids should be retained
@@ -27,11 +56,11 @@ pub trait CacheTracker: Debug {
 }
 
 impl CacheTracker for Box<dyn CacheTracker> {
-    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
+    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         self.as_mut().blocks_accessed(blocks)
     }
 
-    fn blocks_written(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
+    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {
         self.as_mut().blocks_written(blocks)
     }
 
@@ -75,7 +104,7 @@ pub struct InMemCacheTracker<T, F> {
 impl<T, F> InMemCacheTracker<T, F>
 where
     T: Ord + Clone + Debug,
-    F: Fn(Duration, &Cid, &[u8]) -> Option<T>,
+    F: Fn(Duration, BlockInfo) -> Option<T>,
 {
     /// mk_cache_entry will be called on each block access to create or update a cache entry.
     /// It allows to customize whether we are interested in an entry at all, and what
@@ -117,17 +146,17 @@ fn get_key<T: Ord + Clone>(
 impl<T, F> CacheTracker for InMemCacheTracker<T, F>
 where
     T: Ord + Clone + Debug,
-    F: Fn(Duration, &Cid, &[u8]) -> Option<T>,
+    F: Fn(Duration, BlockInfo) -> Option<T>,
 {
     /// called whenever blocks were accessed
-    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
+    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         let now = Instant::now().checked_duration_since(self.created).unwrap();
         let mut cache = self.cache.lock().unwrap();
-        for (id, cid, data) in blocks {
-            if let Some(value) = (self.mk_cache_entry)(now, cid, data) {
-                cache.insert(*id, value);
+        for block in blocks {
+            if let Some(value) = (self.mk_cache_entry)(now, block) {
+                cache.insert(block.id, value);
             } else {
-                cache.remove(id);
+                cache.remove(&block.id);
             }
         }
     }

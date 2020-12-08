@@ -1,14 +1,10 @@
 use std::{
     fmt::Debug,
-    marker::PhantomData,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use ipfs_sqlite_block_store::{
-    cache::{CacheTracker, InMemCacheTracker, NoopCacheTracker, SqliteCacheTracker},
-    BlockStore, Config, OwnedBlock, SizeTargets,
-};
+use ipfs_sqlite_block_store::{BlockStore, Config, OwnedBlock, SizeTargets, cache::{BlockInfo, CacheTracker, InMemCacheTracker, NoopCacheTracker, SqliteCacheTracker}};
 use itertools::*;
 use libipld::Cid;
 use multihash::{Code, MultihashDigest};
@@ -36,7 +32,7 @@ impl<S: Spawner, T: CacheTracker> AsyncCacheTracker<S, T> {
 }
 
 trait Spawner {
-    fn spawn_blocking(&self, f: impl Fn() + Send + 'static);
+    fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static);
 }
 
 struct TokioSpawner;
@@ -53,22 +49,14 @@ where
     T: CacheTracker + Send + 'static,
 {
     /// called whenever blocks were accessed
-    fn blocks_accessed(&mut self, blocks: &[(i64, &Cid, &[u8])]) {
-        let blocks = blocks
-            .iter()
-            .map(|(id, cid, data)| (*id, **cid, data.to_vec()))
-            .collect::<Vec<_>>();
+    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
-            let arg = blocks
-                .iter()
-                .map(|(id, cid, data)| (*id, cid, data.as_ref()))
-                .collect::<Vec<_>>();
-            inner.lock().unwrap().blocks_accessed(&arg);
+            inner.lock().unwrap().blocks_accessed(blocks);
         });
     }
     /// called whenever blocks were written
-    fn blocks_written(&mut self, blocks: &[(i64, &Cid, &[u8])]) {}
+    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {}
     /// notification that these ids no longer have to be tracked
     fn delete_ids(&mut self, ids: &[i64]) {
         self.inner.lock().unwrap().delete_ids(ids);
@@ -110,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     // a tracker that only cares about access time
     let tracker =
-        SqliteCacheTracker::open("cache-test-access.sqlite", |access, _, _| Some(access))?;
+        SqliteCacheTracker::open("cache-test-access.sqlite", |access, _| Some(access))?;
     let tracker = AsyncCacheTracker::new(TokioSpawner, tracker);
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
     // let tracker = NoopCacheTracker;
