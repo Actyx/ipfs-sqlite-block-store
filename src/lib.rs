@@ -1,3 +1,35 @@
+//! # IPFS sqlite block store
+//!
+//! A block store for a rust implementation of [ipfs](https://ipfs.io/).
+//!
+//! # Concepts
+//!
+//! ## Aliases
+//!
+//! An alias is a named pin of a root. When a root is aliased, none of the leaves of the dag pointed
+//! to by the root will be collected by gc. However, a root being aliased does not mean that the dag
+//! must be complete.
+//!
+//! ## Temporary aliases
+//!
+//! A temporary alias is an unnamed alias that is just for the purpose of protecting blocks from gc
+//! while a large tree is being constructed. While an alias maps a single name to a single root, a
+//! temporary alias can be assigned to an arbitary number of blocks before the dag is finished.
+//!
+//! A temporary alias will be deleted as soon as the handle goes out of scope.
+//!
+//! ## GC
+//!
+//! GC refers to the process of removing unpinned blocks. It runs only when the configured size
+//! targets are exceeded. Size targets contain both the total size of the store and the number of
+//! blocks.
+//!
+//! GC will run incrementally, deleting blocks until the size targets are no longer exceeeded. The
+//! order in which unpinned blocks will be deleted can be customized.
+//!
+//! ## Caching
+//!
+//! For unpinned blocks, it is possible to customize which blocks have the highest value.
 pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
