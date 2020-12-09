@@ -396,3 +396,13 @@ async fn gc_loop() -> anyhow::Result<()> {
     handle.abort();
     Ok(())
 }
+
+#[test]
+fn broken_db() -> anyhow::Result<()> {
+    let store = BlockStore::open("test-data/mini.sqlite", Config::default())?;
+    assert!(store.integrity_check().is_ok());
+
+    let store = BlockStore::open("test-data/broken.sqlite", Config::default())?;
+    assert!(store.integrity_check().is_err());
+    Ok(())
+}
