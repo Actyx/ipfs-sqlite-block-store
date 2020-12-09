@@ -290,6 +290,18 @@ impl BlockStore {
         })
     }
 
+    pub fn integrity_check(&self) -> crate::Result<()> {
+        let result = integrity_check(&self.conn)?;
+        if result == vec!["ok".to_owned()] {
+            Ok(())
+        } else {
+            let error_text = result.join(";");
+            Err(crate::error::BlockStoreError::SqliteError(
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(11), Some(error_text)),
+            ))
+        }
+    }
+
     /// Get a temporary alias for safely adding blocks to the store
     pub fn temp_alias(&self) -> TempAlias {
         TempAlias {
