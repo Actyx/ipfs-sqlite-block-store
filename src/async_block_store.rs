@@ -27,11 +27,13 @@ pub struct AsyncTempAlias(Arc<TempAlias>);
 
 /// Adapter for a runtime such as tokio or async_std
 pub trait RuntimeAdapter {
+    /// run a blocking block of code, most likely involving IO, on a different thread.
     fn unblock<F, T>(&self, f: F) -> BoxFuture<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static;
 
+    /// sleep for the given duration
     fn sleep(&self, duration: Duration) -> BoxFuture<()>;
 }
 
@@ -156,8 +158,13 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
 
     /// A gc loop that runs incremental gc in regular intervals
     ///
-    /// Gc will run as long as this future is polled.
+    /// Gc will run as long as this future is polled. GC is a two step process. First, the
+    /// metadata of expendable non-pinned blocks will be deleted, then the actual data will 
+    /// be removed. This will run the first step and the second step interleaved to minimize
+    /// gc interruptions.
     pub async fn gc_loop(self, config: GcConfig) -> crate::Result<()> {
+        // initial delay so we don't start gc directly on startup
+        self.runtime.sleep(config.interval / 2).await;
         loop {
             debug!("gc_loop running incremental gc");
             self.incremental_gc(config.min_blocks, config.target_duration)

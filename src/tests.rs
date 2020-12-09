@@ -386,12 +386,12 @@ async fn gc_loop() -> anyhow::Result<()> {
         .await?;
     store.add_block(b, b"fubar".to_vec(), vec![], None).await?;
     // give GC opportunity to run
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(store.has_block(a).await?);
     assert!(!store.has_block(b).await?);
     drop(alias);
     // give GC opportunity to run
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(!store.has_block(a).await?);
     handle.abort();
     Ok(())
