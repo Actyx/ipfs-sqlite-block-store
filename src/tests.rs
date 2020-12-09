@@ -1,6 +1,6 @@
 #![allow(clippy::many_single_char_names)]
 use crate::{
-    async_block_store::{AsyncBlockStore, Unblocker},
+    async_block_store::{AsyncBlockStore, Runtime},
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
@@ -297,15 +297,20 @@ fn test_reverse_alias() -> anyhow::Result<()> {
     Ok(())
 }
 
-struct TokioUblocker;
+#[derive(Clone)]
+struct TokioRuntime;
 
-impl Unblocker for TokioUblocker {
+impl Runtime for TokioRuntime {
     fn unblock<F, T>(&self, f: F) -> futures::future::BoxFuture<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
         async { tokio::task::spawn_blocking(f).await.unwrap() }.boxed()
+    }
+
+    fn sleep(&self, duration: Duration) -> futures::future::BoxFuture<()> {
+        tokio::time::sleep(duration).boxed()
     }
 }
 
@@ -335,7 +340,7 @@ fn temp_alias() -> anyhow::Result<()> {
 #[tokio::test]
 async fn temp_alias_async() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
-    let store = AsyncBlockStore::new(TokioUblocker, store);
+    let store = AsyncBlockStore::new(TokioRuntime, store);
     let a = cid("a");
     let b = cid("b");
     let alias = store.temp_alias().await;
@@ -357,5 +362,35 @@ async fn temp_alias_async() -> anyhow::Result<()> {
     assert!(!store.has_block(a).await?);
     assert!(!store.has_block(b).await?);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn gc_loop() -> anyhow::Result<()> {
+    let store = BlockStore::memory(Config::default())?;
+    let store = AsyncBlockStore::new(TokioRuntime, store);
+    // let gc run in the background
+    let gc_loop = store
+        .clone()
+        .gc_loop(Duration::from_millis(100), 1000, Duration::from_secs(1));
+    let handle = tokio::spawn(gc_loop);
+
+    // add 2 blocks, one temp aliased, one not
+    let a = cid("a");
+    let b = cid("b");
+    let alias = store.temp_alias().await;
+    store
+        .add_block(a, b"fubar".to_vec(), vec![], Some(alias.clone()))
+        .await?;
+    store.add_block(b, b"fubar".to_vec(), vec![], None).await?;
+    // give GC opportunity to run
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(store.has_block(a).await?);
+    assert!(!store.has_block(b).await?);
+    drop(alias);
+    // give GC opportunity to run
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!store.has_block(a).await?);
+    handle.abort();
     Ok(())
 }

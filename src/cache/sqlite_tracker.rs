@@ -129,6 +129,7 @@ impl<F> CacheTracker for SqliteCacheTracker<F>
 where
     F: Fn(i64, BlockInfo) -> Option<i64> + Send,
 {
+    #[allow(clippy::needless_collect)]
     fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
         let accessed = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
