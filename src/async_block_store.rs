@@ -26,7 +26,7 @@ impl AsyncTempAlias {
 pub struct AsyncTempAlias(Arc<TempAlias>);
 
 /// Adapter for a runtime such as tokio or async_std
-pub trait Runtime {
+pub trait RuntimeAdapter {
     fn unblock<F, T>(&self, f: F) -> BoxFuture<T>
     where
         F: FnOnce() -> T + Send + 'static,
@@ -35,7 +35,7 @@ pub trait Runtime {
     fn sleep(&self, duration: Duration) -> BoxFuture<()>;
 }
 
-impl<R: Runtime> AsyncBlockStore<R> {
+impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     pub fn new(runtime: R, inner: BlockStore) -> Self {
         Self {
             runtime,

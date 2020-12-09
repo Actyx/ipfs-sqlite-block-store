@@ -1,6 +1,6 @@
 #![allow(clippy::many_single_char_names)]
 use crate::{
-    async_block_store::{AsyncBlockStore, Runtime},
+    async_block_store::{AsyncBlockStore, GcConfig, RuntimeAdapter},
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
@@ -300,7 +300,7 @@ fn test_reverse_alias() -> anyhow::Result<()> {
 #[derive(Clone)]
 struct TokioRuntime;
 
-impl Runtime for TokioRuntime {
+impl RuntimeAdapter for TokioRuntime {
     fn unblock<F, T>(&self, f: F) -> futures::future::BoxFuture<T>
     where
         F: FnOnce() -> T + Send + 'static,
@@ -370,9 +370,11 @@ async fn gc_loop() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
     let store = AsyncBlockStore::new(TokioRuntime, store);
     // let gc run in the background
-    let gc_loop = store
-        .clone()
-        .gc_loop(Duration::from_millis(100), 1000, Duration::from_secs(1));
+    let gc_loop = store.clone().gc_loop(GcConfig {
+        interval: Duration::from_millis(100),
+        min_blocks: 10000,
+        target_duration: Duration::from_secs(1),
+    });
     let handle = tokio::spawn(gc_loop);
 
     // add 2 blocks, one temp aliased, one not
