@@ -7,10 +7,12 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tracing::*;
 
-pub struct AsyncBlockStore<U> {
+#[derive(Clone)]
+pub struct AsyncBlockStore<R> {
     inner: Arc<Mutex<BlockStore>>,
-    unblocker: U,
+    runtime: R,
 }
 
 impl AsyncTempAlias {
@@ -23,17 +25,22 @@ impl AsyncTempAlias {
 #[derive(Debug, Clone)]
 pub struct AsyncTempAlias(Arc<TempAlias>);
 
-pub trait Unblocker {
+/// Adapter for a runtime such as tokio or async_std
+pub trait RuntimeAdapter {
+    /// run a blocking block of code, most likely involving IO, on a different thread.
     fn unblock<F, T>(&self, f: F) -> BoxFuture<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static;
+
+    /// sleep for the given duration
+    fn sleep(&self, duration: Duration) -> BoxFuture<()>;
 }
 
-impl<U: Unblocker> AsyncBlockStore<U> {
-    pub fn new(unblocker: U, inner: BlockStore) -> Self {
+impl<R: RuntimeAdapter> AsyncBlockStore<R> {
+    pub fn new(runtime: R, inner: BlockStore) -> Self {
         Self {
-            unblocker,
+            runtime,
             inner: Arc::new(Mutex::new(inner)),
         }
     }
@@ -145,7 +152,64 @@ impl<U: Unblocker> AsyncBlockStore<U> {
         f: impl FnOnce(&mut BlockStore) -> T + Send + 'static,
     ) -> BoxFuture<T> {
         let inner = self.inner.clone();
-        self.unblocker
+        self.runtime
             .unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
+    }
+
+    /// A gc loop that runs incremental gc in regular intervals
+    ///
+    /// Gc will run as long as this future is polled. GC is a two step process. First, the
+    /// metadata of expendable non-pinned blocks will be deleted, then the actual data will 
+    /// be removed. This will run the first step and the second step interleaved to minimize
+    /// gc interruptions.
+    pub async fn gc_loop(self, config: GcConfig) -> crate::Result<()> {
+        // initial delay so we don't start gc directly on startup
+        self.runtime.sleep(config.interval / 2).await;
+        loop {
+            debug!("gc_loop running incremental gc");
+            self.incremental_gc(config.min_blocks, config.target_duration)
+                .await?;
+            self.runtime.sleep(config.interval / 2).await;
+            debug!("gc_loop running incremental delete orphaned");
+            self.incremental_delete_orphaned(config.min_blocks, config.target_duration)
+                .await?;
+            self.runtime.sleep(config.interval / 2).await;
+        }
+    }
+}
+
+/// Configuration for the gc loop
+///
+/// This is done as a config struct since we might have additional parameters here in the future,
+/// such as limits at which to do a full gc.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct GcConfig {
+    /// interval at which gc runs
+    ///
+    /// note that this is implemented as delays between gcs, so it will not run exactly
+    /// at this interval, but there will be some drift if gc takes long.
+    pub interval: Duration,
+
+    /// minimum number of blocks to collect in any case
+    ///
+    /// Using this parameter, it is possible to guarantee a minimum rate with which gc will be
+    /// able to keep up. It is min_blocks / interval.
+    pub min_blocks: usize,
+
+    /// The target maximum gc duration of a single gc.
+    ///
+    /// This can not be guaranteed, since we guarantee to collect at least `min_blocks`.
+    /// But as soon as this duration is exceeded, the incremental gc will stop doing additional
+    /// work.
+    pub target_duration: Duration,
+}
+
+impl Default for GcConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(60),
+            min_blocks: 10000,
+            target_duration: Duration::from_secs(1),
+        }
     }
 }
