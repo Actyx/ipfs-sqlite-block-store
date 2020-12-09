@@ -159,7 +159,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     /// A gc loop that runs incremental gc in regular intervals
     ///
     /// Gc will run as long as this future is polled. GC is a two step process. First, the
-    /// metadata of expendable non-pinned blocks will be deleted, then the actual data will 
+    /// metadata of expendable non-pinned blocks will be deleted, then the actual data will
     /// be removed. This will run the first step and the second step interleaved to minimize
     /// gc interruptions.
     pub async fn gc_loop(self, config: GcConfig) -> crate::Result<()> {

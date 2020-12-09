@@ -551,6 +551,14 @@ pub(crate) fn init_db(conn: &mut Connection, is_memory: bool) -> anyhow::Result<
     Ok(())
 }
 
+pub(crate) fn integrity_check(conn: &Connection) -> crate::Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT integrity_check FROM pragma_integrity_check")?;
+    let result = stmt
+        .query_map(NO_PARAMS, |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(result)
+}
+
 /// helper to log execution time of a block of code that returns a result
 ///
 /// will log at info level if `expected_duration` is exceeded,
