@@ -11,7 +11,7 @@ use cache::{BlockInfo, CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, DatabaseName, Transaction};
 use std::{
     convert::TryFrom,
     fmt,
@@ -24,6 +24,7 @@ use std::{
     },
     time::Duration,
 };
+use tracing::*;
 
 /// Size targets for a store. Gc of non-pinned blocks will start once one of the size targets is exceeded.
 ///
@@ -255,6 +256,31 @@ impl BlockStore {
     pub fn open(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn, false)?;
+        let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
+        config.cache_tracker.retain_ids(&ids);
+        Ok(Self {
+            conn,
+            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            config,
+        })
+    }
+
+    pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
+        let mut conn = Connection::open_in_memory()?;
+        debug!(
+            "Restoring in memory database from {}",
+            path.as_ref().display()
+        );
+        conn.restore(
+            DatabaseName::Main,
+            path,
+            Some(|p: rusqlite::backup::Progress| {
+                let percent = (p.pagecount - p.remaining) * 100 / p.pagecount;
+                if percent % 10 == 0 {
+                    debug!("Restoring: {} %", percent);
+                }
+            }),
+        )?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {

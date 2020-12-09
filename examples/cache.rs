@@ -1,8 +1,5 @@
 use ipfs_sqlite_block_store::{
-    cache::{
-        AsyncCacheTracker, BlockInfo, CacheTracker, InMemCacheTracker, NoopCacheTracker, Spawner,
-        SqliteCacheTracker,
-    },
+    cache::{AsyncCacheTracker, Spawner, SqliteCacheTracker},
     BlockStore, Config, OwnedBlock, SizeTargets,
 };
 use itertools::*;
