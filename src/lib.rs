@@ -1,3 +1,63 @@
+//! # IPFS sqlite block store
+//!
+//! A block store for a rust implementation of [ipfs](https://ipfs.io/).
+//!
+//! # Concepts
+//!
+//! ## Aliases
+//!
+//! An alias is a named pin of a root. When a root is aliased, none of the leaves of the dag pointed
+//! to by the root will be collected by gc. However, a root being aliased does not mean that the dag
+//! must be complete.
+//!
+//! ## Temporary aliases
+//!
+//! A temporary alias is an unnamed alias that is just for the purpose of protecting blocks from gc
+//! while a large tree is being constructed. While an alias maps a single name to a single root, a
+//! temporary alias can be assigned to an arbitary number of blocks before the dag is finished.
+//!
+//! A temporary alias will be deleted as soon as the handle goes out of scope.
+//!
+//! ## Garbage Collection (GC)
+//!
+//! GC refers to the process of removing unpinned blocks. It runs only when the configured size
+//! targets are exceeded. [Size targets](SizeTargets) contain both the total size of the store
+//! and the number of blocks.
+//!
+//! GC will run incrementally, deleting blocks until the size targets are no longer exceeded. The
+//! order in which unpinned blocks will be deleted can be customized.
+//!
+//! ## Caching
+//!
+//! For unpinned blocks, it is possible to customize which blocks have the highest value using a
+//! [CacheTracker](cache::CacheTracker). The default is to [do nothing](cache::NoopCacheTracker)
+//! and has no performance overhead.
+//!
+//! The most elaborate implemented strategy is to keep track of access times in a separate database,
+//! via the [SqliteCacheTracker](cache::SqliteCacheTracker), which has a slight performance overhead.
+//!
+//! The performance overhead of writing to an access tracking database on each block read can be
+//! mitigated by using the [AsyncCacheTracker](cache::AsyncCacheTracker) wrapper to perform the database
+//! writes on a different thread.
+//!
+//! # Usage
+//!
+//! ## Blocking
+//!
+//! For blocking usage, use [BlockStore](BlockStore). This is the most low level interface.
+//!
+//! ## Non-blocking
+//!
+//! For non-blocking usage, use [AsyncBlockStore](async_block_store::AsyncBlockStore). This is a
+//! wrapper that is meant to be used from async rust. In addition to wrapping most methods of
+//! [BlockStore], it provides a method [gc_loop](async_block_store::AsyncBlockStore::gc_loop) to
+//! run gc continuously.
+//!
+//! # Major differences to the go-ipfs pinning concept
+//!
+//! - Pinning/aliasing a root does not require that the dag is complete
+//! - Aliases/named pins as opposed to unnamed and non-reference-counted pins
+//! - Temporary pins as a mechanism to keep blocks safe from gc while a tree is being constructed
 pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
@@ -95,7 +155,7 @@ impl Config {
 
 pub struct BlockStore {
     conn: Connection,
-    expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
+    expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
 }
 
@@ -118,16 +178,16 @@ impl StoreStats {
 }
 
 // do not implement Clone for this!
-/// a handle that contains a temporary alias
+/// a handle that contains a temporary pin
 ///
-/// dropping this handle enqueue the alias for dropping before the next gc.
-pub struct TempAlias {
+/// dropping this handle enqueue the pin for dropping before the next gc.
+pub struct TempPin {
     id: AtomicI64,
-    expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
+    expired_temp_pins: Arc<Mutex<Vec<i64>>>,
 }
 
 /// dump the temp alias id so you can find it in the database
-impl fmt::Debug for TempAlias {
+impl fmt::Debug for TempPin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let id = self.id.load(Ordering::SeqCst);
         let mut builder = f.debug_struct("TempAlias");
@@ -138,14 +198,14 @@ impl fmt::Debug for TempAlias {
     }
 }
 
-impl Drop for TempAlias {
+impl Drop for TempPin {
     fn drop(&mut self) {
         let id = self.id.get_mut();
         let alias = *id;
         if alias > 0 {
             // not sure if we have to guard against double drop, but it certainly does not hurt.
             *id = 0;
-            self.expired_temp_aliases.lock().unwrap().push(alias);
+            self.expired_temp_pins.lock().unwrap().push(alias);
         }
     }
 }
@@ -247,7 +307,7 @@ impl BlockStore {
         init_db(&mut conn, true)?;
         Ok(Self {
             conn,
-            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
         })
     }
@@ -260,7 +320,7 @@ impl BlockStore {
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
         })
     }
@@ -303,10 +363,10 @@ impl BlockStore {
     }
 
     /// Get a temporary alias for safely adding blocks to the store
-    pub fn temp_alias(&self) -> TempAlias {
-        TempAlias {
+    pub fn temp_pin(&self) -> TempPin {
+        TempPin {
             id: AtomicI64::new(0),
-            expired_temp_aliases: self.expired_temp_aliases.clone(),
+            expired_temp_pins: self.expired_temp_pins.clone(),
         }
     }
 
@@ -408,11 +468,11 @@ impl BlockStore {
     ///
     /// Returns true if either size targets are met or there are no unpinned blocks left.
     pub fn incremental_gc(&mut self, min_blocks: usize, max_duration: Duration) -> Result<bool> {
-        // atomically grab the expired_temp_aliases until now
-        let expired_temp_aliases = {
+        // atomically grab the expired_temp_pins until now
+        let expired_temp_pins = {
             let mut result = Vec::new();
             std::mem::swap(
-                self.expired_temp_aliases.lock().unwrap().deref_mut(),
+                self.expired_temp_pins.lock().unwrap().deref_mut(),
                 &mut result,
             );
             result
@@ -422,8 +482,8 @@ impl BlockStore {
             let cache_tracker = &mut self.config.cache_tracker;
             in_txn(&mut self.conn, move |txn| {
                 // get rid of dropped temp aliases, this should be fast
-                for id in expired_temp_aliases {
-                    delete_temp_alias(txn, id)?;
+                for id in expired_temp_pins {
+                    delete_temp_pin(txn, id)?;
                 }
                 Ok(incremental_gc(
                     &txn,
@@ -480,7 +540,7 @@ impl BlockStore {
     pub fn add_blocks<B: Block>(
         &mut self,
         blocks: impl IntoIterator<Item = B>,
-        alias: Option<&TempAlias>,
+        alias: Option<&TempPin>,
     ) -> Result<()> {
         let infos = in_txn(&mut self.conn, |txn| {
             let alias = alias.map(|alias| &alias.id);
@@ -514,7 +574,7 @@ impl BlockStore {
         cid: &Cid,
         data: &[u8],
         links: I,
-        alias: Option<&TempAlias>,
+        alias: Option<&TempPin>,
     ) -> Result<()>
     where
         I: IntoIterator<Item = Cid> + Clone,
