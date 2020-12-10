@@ -143,6 +143,8 @@ fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
 fn migrate_from_v0(txn: &Transaction) -> anyhow::Result<()> {
     info!("executing migration from v0 to v1");
     txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0")?;
+    // drop the old refs table, since the content can be extracted from blocks_v0
+    txn.execute_batch("DROP TABLE IF EXISTS refs;")?;
     txn.execute_batch(INIT)?;
     let mut stmt = txn.prepare("SELECT * FROM blocks_v0")?;
     let block_iter = stmt.query_map(params![], |row| {
