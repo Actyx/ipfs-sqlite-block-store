@@ -52,6 +52,12 @@
 //! wrapper that is meant to be used from async rust. In addition to wrapping most methods of
 //! [BlockStore], it provides a method [gc_loop](async_block_store::AsyncBlockStore::gc_loop) to
 //! run gc continuously.
+//!
+//! # Major differences to the go-ipfs pinning concept
+//!
+//! - Pinning/aliasing a root does not require that the dag is complete
+//! - Aliases/named pins as opposed to unnamed and non-reference-counted pins
+//! - Temporary pins as a mechanism to keep blocks safe from gc while a tree is being constructed
 pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
