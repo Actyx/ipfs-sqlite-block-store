@@ -24,7 +24,7 @@
 //! targets are exceeded. Size targets contain both the total size of the store and the number of
 //! blocks.
 //!
-//! GC will run incrementally, deleting blocks until the size targets are no longer exceeeded. The
+//! GC will run incrementally, deleting blocks until the size targets are no longer exceeded. The
 //! order in which unpinned blocks will be deleted can be customized.
 //!
 //! ## Caching
@@ -126,7 +126,7 @@ impl Config {
 
 pub struct BlockStore {
     conn: Connection,
-    expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
+    expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
 }
 
@@ -149,16 +149,16 @@ impl StoreStats {
 }
 
 // do not implement Clone for this!
-/// a handle that contains a temporary alias
+/// a handle that contains a temporary pin
 ///
-/// dropping this handle enqueue the alias for dropping before the next gc.
-pub struct TempAlias {
+/// dropping this handle enqueue the pin for dropping before the next gc.
+pub struct TempPin {
     id: AtomicI64,
-    expired_temp_aliases: Arc<Mutex<Vec<i64>>>,
+    expired_temp_pins: Arc<Mutex<Vec<i64>>>,
 }
 
 /// dump the temp alias id so you can find it in the database
-impl fmt::Debug for TempAlias {
+impl fmt::Debug for TempPin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let id = self.id.load(Ordering::SeqCst);
         let mut builder = f.debug_struct("TempAlias");
@@ -169,14 +169,14 @@ impl fmt::Debug for TempAlias {
     }
 }
 
-impl Drop for TempAlias {
+impl Drop for TempPin {
     fn drop(&mut self) {
         let id = self.id.get_mut();
         let alias = *id;
         if alias > 0 {
             // not sure if we have to guard against double drop, but it certainly does not hurt.
             *id = 0;
-            self.expired_temp_aliases.lock().unwrap().push(alias);
+            self.expired_temp_pins.lock().unwrap().push(alias);
         }
     }
 }
@@ -278,7 +278,7 @@ impl BlockStore {
         init_db(&mut conn, true)?;
         Ok(Self {
             conn,
-            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
         })
     }
@@ -291,16 +291,16 @@ impl BlockStore {
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
         })
     }
 
     /// Get a temporary alias for safely adding blocks to the store
-    pub fn temp_alias(&self) -> TempAlias {
-        TempAlias {
+    pub fn temp_pin(&self) -> TempPin {
+        TempPin {
             id: AtomicI64::new(0),
-            expired_temp_aliases: self.expired_temp_aliases.clone(),
+            expired_temp_pins: self.expired_temp_pins.clone(),
         }
     }
 
@@ -402,11 +402,11 @@ impl BlockStore {
     ///
     /// Returns true if either size targets are met or there are no unpinned blocks left.
     pub fn incremental_gc(&mut self, min_blocks: usize, max_duration: Duration) -> Result<bool> {
-        // atomically grab the expired_temp_aliases until now
-        let expired_temp_aliases = {
+        // atomically grab the expired_temp_pins until now
+        let expired_temp_pins = {
             let mut result = Vec::new();
             std::mem::swap(
-                self.expired_temp_aliases.lock().unwrap().deref_mut(),
+                self.expired_temp_pins.lock().unwrap().deref_mut(),
                 &mut result,
             );
             result
@@ -416,8 +416,8 @@ impl BlockStore {
             let cache_tracker = &mut self.config.cache_tracker;
             in_txn(&mut self.conn, move |txn| {
                 // get rid of dropped temp aliases, this should be fast
-                for id in expired_temp_aliases {
-                    delete_temp_alias(txn, id)?;
+                for id in expired_temp_pins {
+                    delete_temp_pin(txn, id)?;
                 }
                 Ok(incremental_gc(
                     &txn,
@@ -474,7 +474,7 @@ impl BlockStore {
     pub fn add_blocks<B: Block>(
         &mut self,
         blocks: impl IntoIterator<Item = B>,
-        alias: Option<&TempAlias>,
+        alias: Option<&TempPin>,
     ) -> Result<()> {
         let infos = in_txn(&mut self.conn, |txn| {
             let alias = alias.map(|alias| &alias.id);
@@ -508,7 +508,7 @@ impl BlockStore {
         cid: &Cid,
         data: &[u8],
         links: I,
-        alias: Option<&TempAlias>,
+        alias: Option<&TempPin>,
     ) -> Result<()>
     where
         I: IntoIterator<Item = Cid> + Clone,

@@ -1,4 +1,4 @@
-use crate::{Block, BlockStore, StoreStats, TempAlias};
+use crate::{Block, BlockStore, StoreStats, TempPin};
 use futures::future::BoxFuture;
 use libipld::Cid;
 use std::{
@@ -15,15 +15,15 @@ pub struct AsyncBlockStore<R> {
     runtime: R,
 }
 
-impl AsyncTempAlias {
-    fn new(alias: TempAlias) -> Self {
+impl AsyncTempPin {
+    fn new(alias: TempPin) -> Self {
         Self(Arc::new(alias))
     }
 }
 
 /// a temp alias that can be freely cloned and shared
 #[derive(Debug, Clone)]
-pub struct AsyncTempAlias(Arc<TempAlias>);
+pub struct AsyncTempPin(Arc<TempPin>);
 
 /// Adapter for a runtime such as tokio or async_std
 pub trait RuntimeAdapter {
@@ -45,8 +45,8 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         }
     }
 
-    pub async fn temp_alias(&self) -> AsyncTempAlias {
-        self.unblock(|store| AsyncTempAlias::new(store.temp_alias()))
+    pub async fn temp_pin(&self) -> AsyncTempPin {
+        self.unblock(|store| AsyncTempPin::new(store.temp_pin()))
             .await
     }
 
@@ -123,7 +123,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     pub async fn add_blocks<B: Block + Send + 'static>(
         &self,
         blocks: Vec<B>,
-        alias: Option<AsyncTempAlias>,
+        alias: Option<AsyncTempPin>,
     ) -> crate::Result<()> {
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());
@@ -137,7 +137,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         cid: Cid,
         data: Vec<u8>,
         links: Vec<Cid>,
-        alias: Option<AsyncTempAlias>,
+        alias: Option<AsyncTempPin>,
     ) -> crate::Result<()> {
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());

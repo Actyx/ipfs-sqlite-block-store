@@ -315,11 +315,11 @@ impl RuntimeAdapter for TokioRuntime {
 }
 
 #[test]
-fn temp_alias() -> anyhow::Result<()> {
+fn temp_pin() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let a = cid("a");
     let b = cid("b");
-    let alias = store.temp_alias();
+    let alias = store.temp_pin();
 
     store.add_block(&a, b"abcd", vec![], Some(&alias))?;
     store.gc()?;
@@ -338,12 +338,12 @@ fn temp_alias() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn temp_alias_async() -> anyhow::Result<()> {
+async fn temp_pin_async() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
     let store = AsyncBlockStore::new(TokioRuntime, store);
     let a = cid("a");
     let b = cid("b");
-    let alias = store.temp_alias().await;
+    let alias = store.temp_pin().await;
 
     store
         .add_block(a, b"abcd".to_vec(), vec![], Some(alias.clone()))
@@ -380,7 +380,7 @@ async fn gc_loop() -> anyhow::Result<()> {
     // add 2 blocks, one temp aliased, one not
     let a = cid("a");
     let b = cid("b");
-    let alias = store.temp_alias().await;
+    let alias = store.temp_pin().await;
     store
         .add_block(a, b"fubar".to_vec(), vec![], Some(alias.clone()))
         .await?;

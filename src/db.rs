@@ -93,24 +93,24 @@ CREATE TABLE IF NOT EXISTS aliases (
 CREATE INDEX IF NOT EXISTS idx_aliases_block_id
 ON aliases (block_id);
 
-CREATE TABLE IF NOT EXISTS temp_aliases (
-    alias INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS temp_pins (
+    id INTEGER NOT NULL,
     block_id INTEGER NOT NULL,
-    UNIQUE(alias,block_id)
+    UNIQUE(id,block_id)
     CONSTRAINT fk_block_id
       FOREIGN KEY (block_id)
       REFERENCES cids(id)
       ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_temp_aliases_block_id
-ON temp_aliases (block_id);
+CREATE INDEX IF NOT EXISTS idx_temp_pins_block_id
+ON temp_pins (block_id);
 
-CREATE INDEX IF NOT EXISTS idx_temp_aliases_alias
-ON temp_aliases (alias);
+CREATE INDEX IF NOT EXISTS idx_temp_pins_id
+ON temp_pins (id);
 
 -- delete temp aliases that were not dropped because of crash
-DELETE FROM temp_aliases;
+DELETE FROM temp_pins;
 
 -- stats table to keep track of total number and size of blocks
 CREATE TABLE IF NOT EXISTS stats (
@@ -229,7 +229,7 @@ pub(crate) fn incremental_gc(
 WITH RECURSIVE
     descendant_of(id) AS
     (
-        SELECT block_id FROM aliases UNION SELECT block_id FROM temp_aliases
+        SELECT block_id FROM aliases UNION SELECT block_id FROM temp_pins
         UNION ALL
         SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
     )
@@ -321,8 +321,8 @@ pub(crate) fn incremental_delete_orphaned(
     Ok(n == ids.len())
 }
 
-pub(crate) fn delete_temp_alias(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
-    txn.prepare_cached("DELETE FROM temp_aliases WHERE alias = ?")?
+pub(crate) fn delete_temp_pin(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
+    txn.prepare_cached("DELETE FROM temp_pins WHERE id = ?")?
         .execute(&[alias])?;
     Ok(())
 }
@@ -344,17 +344,15 @@ pub(crate) fn add_block<C: ToSql>(
     if let Some(alias) = alias {
         let alias_id = alias.load(Ordering::SeqCst);
         if alias_id > 0 {
-            txn.prepare_cached(
-                "INSERT OR IGNORE INTO temp_aliases (alias, block_id) VALUES (?, ?)",
-            )?
-            .execute(&[alias_id, id])?;
+            txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")?
+                .execute(&[alias_id, id])?;
         } else {
             // since we are not using an autoincrement column, this will reuse ids.
             // I think this is safe, but is it really? deserves some thought.
             let alias_id: i64 = txn
-                .prepare_cached("SELECT COALESCE(MAX(alias), 1) + 1 FROM temp_aliases")?
+                .prepare_cached("SELECT COALESCE(MAX(id), 1) + 1 FROM temp_pins")?
                 .query_row(NO_PARAMS, |row| row.get(0))?;
-            txn.prepare_cached("INSERT INTO temp_aliases (alias, block_id) VALUES (?, ?)")?
+            txn.prepare_cached("INSERT INTO temp_pins (id, block_id) VALUES (?, ?)")?
                 .execute(&[alias_id, id])?;
             alias.store(alias_id, Ordering::SeqCst);
         }
