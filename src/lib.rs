@@ -325,6 +325,10 @@ impl BlockStore {
         })
     }
 
+    /// Open the file at the given path for testing.
+    ///
+    /// This will create a writeable in-memory database that is initialized with the content
+    /// of the file at the given path.
     pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         debug!(
@@ -345,7 +349,7 @@ impl BlockStore {
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            expired_temp_aliases: Arc::new(Mutex::new(Vec::new())),
+            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
         })
     }
