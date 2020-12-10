@@ -21,7 +21,7 @@ impl AsyncTempPin {
     }
 }
 
-/// a temp alias that can be freely cloned and shared
+/// a temp pin that can be freely cloned and shared
 #[derive(Debug, Clone)]
 pub struct AsyncTempPin(Arc<TempPin>);
 
@@ -38,6 +38,10 @@ pub trait RuntimeAdapter {
 }
 
 impl<R: RuntimeAdapter> AsyncBlockStore<R> {
+    /// Wrap a block store in an asyc wrapper
+    ///
+    /// `runtime` A runtime adapter for your runtime of choice
+    /// `inner` The BlockStore to wrap
     pub fn new(runtime: R, inner: BlockStore) -> Self {
         Self {
             runtime,

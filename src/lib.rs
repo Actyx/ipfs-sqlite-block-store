@@ -18,18 +18,40 @@
 //!
 //! A temporary alias will be deleted as soon as the handle goes out of scope.
 //!
-//! ## GC
+//! ## Garbage Collection (GC)
 //!
 //! GC refers to the process of removing unpinned blocks. It runs only when the configured size
-//! targets are exceeded. Size targets contain both the total size of the store and the number of
-//! blocks.
+//! targets are exceeded. [Size targets](SizeTargets) contain both the total size of the store
+//! and the number of blocks.
 //!
 //! GC will run incrementally, deleting blocks until the size targets are no longer exceeded. The
 //! order in which unpinned blocks will be deleted can be customized.
 //!
 //! ## Caching
 //!
-//! For unpinned blocks, it is possible to customize which blocks have the highest value.
+//! For unpinned blocks, it is possible to customize which blocks have the highest value using a
+//! [CacheTracker](cache::CacheTracker). The default is to [do nothing](cache::NoopCacheTracker)
+//! and has no performance overhead.
+//!
+//! The most elaborate implemented strategy is to keep track of access times in a separate database,
+//! via the [SqliteCacheTracker](cache::SqliteCacheTracker), which has a slight performance overhead.
+//!
+//! The performance overhead of writing to an access tracking database on each block read can be
+//! mitigated by using the [AsyncCacheTracker](cache::AsyncCacheTracker) wrapper to perform the database
+//! writes on a different thread.
+//!
+//! # Usage
+//!
+//! ## Blocking
+//!
+//! For blocking usage, use [BlockStore](BlockStore). This is the most low level interface.
+//!
+//! ## Non-blocking
+//!
+//! For non-blocking usage, use [AsyncBlockStore](async_block_store::AsyncBlockStore). This is a
+//! wrapper that is meant to be used from async rust. In addition to wrapping most methods of
+//! [BlockStore], it provides a method [gc_loop](async_block_store::AsyncBlockStore::gc_loop) to
+//! run gc continuously.
 pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
