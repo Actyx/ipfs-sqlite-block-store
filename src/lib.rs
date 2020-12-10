@@ -302,7 +302,7 @@ where
 
 impl BlockStore {
     /// Create an in memory block store with the given config
-    pub fn memory(config: Config) -> anyhow::Result<Self> {
+    pub fn memory(config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn, true)?;
         Ok(Self {
@@ -313,7 +313,7 @@ impl BlockStore {
     }
 
     /// Create a persistent block store with the given config
-    pub fn open(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn, false)?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
@@ -329,7 +329,7 @@ impl BlockStore {
     ///
     /// This will create a writeable in-memory database that is initialized with the content
     /// of the file at the given path.
-    pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
+    pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         debug!(
             "Restoring in memory database from {}",
