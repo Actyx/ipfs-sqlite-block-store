@@ -301,7 +301,7 @@ fn test_reverse_alias() -> anyhow::Result<()> {
 struct TokioRuntime;
 
 impl RuntimeAdapter for TokioRuntime {
-    fn unblock<F, T>(&self, f: F) -> futures::future::BoxFuture<T>
+    fn unblock<F, T>(self, f: F) -> futures::future::BoxFuture<'static, T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,

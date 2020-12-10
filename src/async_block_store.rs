@@ -26,9 +26,9 @@ impl AsyncTempPin {
 pub struct AsyncTempPin(Arc<TempPin>);
 
 /// Adapter for a runtime such as tokio or async_std
-pub trait RuntimeAdapter {
+pub trait RuntimeAdapter: Clone + 'static {
     /// run a blocking block of code, most likely involving IO, on a different thread.
-    fn unblock<F, T>(&self, f: F) -> BoxFuture<T>
+    fn unblock<F, T>(self, f: F) -> BoxFuture<'static, T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static;
@@ -36,6 +36,8 @@ pub trait RuntimeAdapter {
     /// sleep for the given duration
     fn sleep(&self, duration: Duration) -> BoxFuture<()>;
 }
+
+type AsyncResult<T> = BoxFuture<'static, crate::Result<T>>;
 
 impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     /// Wrap a block store in an asyc wrapper
@@ -54,13 +56,12 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
             .await
     }
 
-    pub async fn alias(&self, name: Vec<u8>, link: Option<Cid>) -> crate::Result<()> {
+    pub fn alias(&self, name: Vec<u8>, link: Option<Cid>) -> AsyncResult<()> {
         self.unblock(move |store| store.alias(&name, link.as_ref()))
-            .await
     }
 
-    pub async fn gc(&self) -> crate::Result<()> {
-        self.unblock(|store| store.gc()).await
+    pub fn gc(&self) -> AsyncResult<()> {
+        self.unblock(|store| store.gc())
     }
 
     pub async fn incremental_gc(
@@ -72,92 +73,88 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
             .await
     }
 
-    pub async fn incremental_delete_orphaned(
+    pub fn incremental_delete_orphaned(
         &self,
         min_blocks: usize,
         max_duration: Duration,
-    ) -> crate::Result<bool> {
+    ) -> BoxFuture<'static, crate::Result<bool>> {
         self.unblock(move |store| store.incremental_delete_orphaned(min_blocks, max_duration))
-            .await
     }
 
-    pub async fn get_block(&self, cid: Cid) -> crate::Result<Option<Vec<u8>>> {
-        self.unblock(move |store| store.get_block(&cid)).await
+    pub fn get_block(&self, cid: Cid) -> AsyncResult<Option<Vec<u8>>> {
+        self.unblock(move |store| store.get_block(&cid))
     }
 
-    pub async fn has_block(&self, cid: Cid) -> crate::Result<bool> {
-        self.unblock(move |store| store.has_block(&cid)).await
+    pub fn has_block(&self, cid: Cid) -> AsyncResult<bool> {
+        self.unblock(move |store| store.has_block(&cid))
     }
 
-    pub async fn has_cid(&self, cid: Cid) -> crate::Result<bool> {
-        self.unblock(move |store| store.has_cid(&cid)).await
+    pub fn has_cid(&self, cid: Cid) -> AsyncResult<bool> {
+        self.unblock(move |store| store.has_cid(&cid))
     }
 
     pub async fn get_missing_blocks<C: FromIterator<Cid> + Send + 'static>(
         &self,
         cid: Cid,
-    ) -> crate::Result<C> {
+    ) -> AsyncResult<C> {
         self.unblock(move |store| store.get_missing_blocks(&cid))
-            .await
     }
 
-    pub async fn get_descendants<C: FromIterator<Cid> + Send + 'static>(
+    pub fn get_descendants<C: FromIterator<Cid> + Send + 'static>(
         &self,
         cid: Cid,
-    ) -> crate::Result<C> {
-        self.unblock(move |store| store.get_descendants(&cid)).await
+    ) -> AsyncResult<C> {
+        self.unblock(move |store| store.get_descendants(&cid))
     }
 
-    pub async fn reverse_alias(&self, cid: Cid) -> crate::Result<Vec<Vec<u8>>> {
-        self.unblock(move |store| store.reverse_alias(&cid)).await
+    pub fn reverse_alias(&self, cid: Cid) -> AsyncResult<Vec<Vec<u8>>> {
+        self.unblock(move |store| store.reverse_alias(&cid))
     }
 
-    pub async fn get_known_cids<C: FromIterator<Cid> + Send + 'static>(&self) -> crate::Result<C> {
-        self.unblock(move |store| store.get_known_cids()).await
+    pub fn get_known_cids<C: FromIterator<Cid> + Send + 'static>(&self) -> AsyncResult<C> {
+        self.unblock(move |store| store.get_known_cids())
     }
 
-    pub async fn get_block_cids<C: FromIterator<Cid> + Send + 'static>(&self) -> crate::Result<C> {
-        self.unblock(move |store| store.get_block_cids()).await
+    pub fn get_block_cids<C: FromIterator<Cid> + Send + 'static>(&self) -> AsyncResult<C> {
+        self.unblock(move |store| store.get_block_cids())
     }
 
-    pub async fn get_store_stats(&self) -> crate::Result<StoreStats> {
-        self.unblock(move |store| store.get_store_stats()).await
+    pub fn get_store_stats(&self) -> AsyncResult<StoreStats> {
+        self.unblock(move |store| store.get_store_stats())
     }
 
-    pub async fn add_blocks<B: Block + Send + 'static>(
+    pub fn add_blocks<B: Block + Send + 'static>(
         &self,
         blocks: Vec<B>,
         alias: Option<AsyncTempPin>,
-    ) -> crate::Result<()> {
+    ) -> AsyncResult<()> {
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());
             store.add_blocks(blocks, alias)
         })
-        .await
     }
 
-    pub async fn add_block(
+    pub fn add_block(
         &self,
         cid: Cid,
         data: Vec<u8>,
         links: Vec<Cid>,
         alias: Option<AsyncTempPin>,
-    ) -> crate::Result<()> {
+    ) -> AsyncResult<()> {
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());
             store.add_block(&cid, data.as_ref(), links, alias)
         })
-        .await
     }
 
     /// helper to give a piece of code mutable, blocking access on the store
     fn unblock<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut BlockStore) -> T + Send + 'static,
-    ) -> BoxFuture<T> {
+    ) -> BoxFuture<'static, T> {
         let inner = self.inner.clone();
-        self.runtime
-            .unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
+        let runtime = self.runtime.clone();
+        runtime.unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
     }
 
     /// A gc loop that runs incremental gc in regular intervals
