@@ -301,12 +301,12 @@ fn test_reverse_alias() -> anyhow::Result<()> {
 struct TokioRuntime;
 
 impl RuntimeAdapter for TokioRuntime {
-    fn unblock<F, T>(&self, f: F) -> futures::future::BoxFuture<T>
+    fn unblock<F, T>(self, f: F) -> futures::future::BoxFuture<'static, anyhow::Result<T>>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        async { tokio::task::spawn_blocking(f).await.unwrap() }.boxed()
+        tokio::task::spawn_blocking(f).err_into().boxed()
     }
 
     fn sleep(&self, duration: Duration) -> futures::future::BoxFuture<()> {
@@ -343,16 +343,16 @@ async fn temp_pin_async() -> anyhow::Result<()> {
     let store = AsyncBlockStore::new(TokioRuntime, store);
     let a = cid("a");
     let b = cid("b");
-    let alias = store.temp_pin().await;
+    let alias = store.temp_pin().await?;
 
     store
-        .add_block(a, b"abcd".to_vec(), vec![], Some(alias.clone()))
+        .add_block(a, b"abcd".to_vec(), vec![], Some(&alias))
         .await?;
     store.gc().await?;
     assert!(store.has_block(a).await?);
 
     store
-        .add_block(b, b"fubar".to_vec(), vec![], Some(alias.clone()))
+        .add_block(b, b"fubar".to_vec(), vec![], Some(&alias))
         .await?;
     store.gc().await?;
     assert!(store.has_block(b).await?);
@@ -380,9 +380,9 @@ async fn gc_loop() -> anyhow::Result<()> {
     // add 2 blocks, one temp aliased, one not
     let a = cid("a");
     let b = cid("b");
-    let alias = store.temp_pin().await;
+    let alias = store.temp_pin().await?;
     store
-        .add_block(a, b"fubar".to_vec(), vec![], Some(alias.clone()))
+        .add_block(a, b"fubar".to_vec(), vec![], Some(&alias))
         .await?;
     store.add_block(b, b"fubar".to_vec(), vec![], None).await?;
     // give GC opportunity to run

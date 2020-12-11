@@ -123,6 +123,14 @@ impl SizeTargets {
     pub fn exceeded(&self, stats: &StoreStats) -> bool {
         stats.count > self.count || stats.size > self.size
     }
+
+    /// Size targets that can not be reached. This can be used to disable gc.
+    pub fn max_value() -> Self {
+        Self {
+            count: u64::max_value(),
+            size: u64::max_value(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -229,10 +237,9 @@ fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> Result<T>) ->
 
 /// An ipfs block
 pub trait Block {
-    type I: Iterator<Item = Cid>;
     fn cid(&self) -> &Cid;
     fn data(&self) -> &[u8];
-    fn links(&self) -> Self::I;
+    fn links(&self) -> anyhow::Result<Vec<Cid>>;
 }
 
 /// Block that owns its data
@@ -249,8 +256,6 @@ impl OwnedBlock {
 }
 
 impl Block for OwnedBlock {
-    type I = std::vec::IntoIter<Cid>;
-
     fn cid(&self) -> &Cid {
         &self.cid
     }
@@ -259,8 +264,8 @@ impl Block for OwnedBlock {
         &self.data
     }
 
-    fn links(&self) -> Self::I {
-        self.links.clone().into_iter()
+    fn links(&self) -> anyhow::Result<Vec<Cid>> {
+        Ok(self.links.clone())
     }
 }
 
@@ -270,23 +275,19 @@ struct BorrowedBlock<'a, F> {
     links: F,
 }
 
-impl<'a, F, I> BorrowedBlock<'a, F>
+impl<'a, F> BorrowedBlock<'a, F>
 where
-    F: Fn() -> I,
-    I: Iterator<Item = Cid>,
+    F: Fn() -> anyhow::Result<Vec<Cid>>,
 {
     fn new(cid: Cid, data: &'a [u8], links: F) -> Self {
         Self { cid, data, links }
     }
 }
 
-impl<'a, F, I> Block for BorrowedBlock<'a, F>
+impl<'a, F> Block for BorrowedBlock<'a, F>
 where
-    F: Fn() -> I,
-    I: Iterator<Item = Cid>,
+    F: Fn() -> anyhow::Result<Vec<Cid>>,
 {
-    type I = I;
-
     fn cid(&self) -> &Cid {
         &self.cid
     }
@@ -295,14 +296,14 @@ where
         self.data
     }
 
-    fn links(&self) -> Self::I {
+    fn links(&self) -> anyhow::Result<Vec<Cid>> {
         (self.links)()
     }
 }
 
 impl BlockStore {
     /// Create an in memory block store with the given config
-    pub fn memory(config: Config) -> anyhow::Result<Self> {
+    pub fn memory(config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn, true)?;
         Ok(Self {
@@ -313,7 +314,7 @@ impl BlockStore {
     }
 
     /// Create a persistent block store with the given config
-    pub fn open(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn, false)?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
@@ -329,7 +330,7 @@ impl BlockStore {
     ///
     /// This will create a writeable in-memory database that is initialized with the content
     /// of the file at the given path.
-    pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> anyhow::Result<Self> {
+    pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         debug!(
             "Restoring in memory database from {}",
@@ -399,6 +400,21 @@ impl BlockStore {
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
         in_ro_txn(&self.conn, |txn| has_block(txn, cid))
+    }
+
+    /// Look up multiple blocks in one read transaction
+    pub fn has_blocks<I, O>(&self, cids: I) -> Result<O>
+    where
+        I: IntoIterator<Item = Cid>,
+        O: FromIterator<(Cid, bool)>,
+    {
+        in_ro_txn(&self.conn, |txn| {
+            cids.into_iter()
+                .map(|cid| -> Result<(Cid, bool)> {
+                    Ok((cid, has_block(txn, CidBytes::try_from(&cid)?)?))
+                })
+                .collect::<crate::Result<O>>()
+        })
     }
 
     /// Get the stats for the store.
@@ -553,8 +569,9 @@ impl BlockStore {
                 .map(|block| {
                     let cid_bytes = CidBytes::try_from(block.cid())?;
                     let links = block
-                        .links()
-                        .map(|x| CidBytes::try_from(&x))
+                        .links()?
+                        .iter()
+                        .map(CidBytes::try_from)
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
                     let id = add_block(txn, &cid_bytes, &block.data(), links, alias)?;
                     Ok(BlockInfo::new(id, block.cid(), block.data()))
@@ -583,22 +600,36 @@ impl BlockStore {
     where
         I: IntoIterator<Item = Cid> + Clone,
     {
-        let block = BorrowedBlock::new(*cid, data, move || links.clone().into_iter());
+        let block = BorrowedBlock::new(*cid, data, move || Ok(links.clone().into_iter().collect()));
         self.add_blocks(Some(block), alias)?;
         Ok(())
+    }
+    /// Get multiple blocks in a single read transaction
+    pub fn get_blocks<I>(&mut self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
+    where
+        I: IntoIterator<Item = Cid>,
+    {
+        let res = in_ro_txn(&self.conn, |txn| {
+            cids.into_iter()
+                .map(|cid| Ok((cid, get_block(txn, &CidBytes::try_from(&cid)?)?)))
+                .collect::<crate::Result<Vec<_>>>()
+        })?;
+        let infos = res
+            .iter()
+            .filter_map(|(cid, res)| {
+                res.as_ref()
+                    .map(|(id, data)| BlockInfo::new(*id, cid, data))
+            })
+            .collect::<Vec<_>>();
+        self.config.cache_tracker.blocks_accessed(infos);
+        Ok(res
+            .into_iter()
+            .map(|(cid, res)| (cid, res.map(|(_, data)| data))))
     }
     /// Get data for a block
     ///
     /// Will return None if we don't have the data
     pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
-        let cid_bytes = CidBytes::try_from(cid)?;
-        let result = in_ro_txn(&self.conn, |txn| get_block(txn, cid_bytes))?;
-        Ok(result.map(|(id, block)| {
-            // track the cache access
-            self.config
-                .cache_tracker
-                .blocks_accessed(vec![BlockInfo::new(id, cid, block.as_ref())]);
-            block
-        }))
+        Ok(self.get_blocks(std::iter::once(*cid))?.next().unwrap().1)
     }
 }
