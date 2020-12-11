@@ -229,10 +229,9 @@ fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> Result<T>) ->
 
 /// An ipfs block
 pub trait Block {
-    type I: Iterator<Item = Cid>;
     fn cid(&self) -> &Cid;
     fn data(&self) -> &[u8];
-    fn links(&self) -> Self::I;
+    fn links(&self) -> anyhow::Result<Vec<Cid>>;
 }
 
 /// Block that owns its data
@@ -249,8 +248,6 @@ impl OwnedBlock {
 }
 
 impl Block for OwnedBlock {
-    type I = std::vec::IntoIter<Cid>;
-
     fn cid(&self) -> &Cid {
         &self.cid
     }
@@ -259,8 +256,8 @@ impl Block for OwnedBlock {
         &self.data
     }
 
-    fn links(&self) -> Self::I {
-        self.links.clone().into_iter()
+    fn links(&self) -> anyhow::Result<Vec<Cid>> {
+        Ok(self.links.clone())
     }
 }
 
@@ -270,23 +267,19 @@ struct BorrowedBlock<'a, F> {
     links: F,
 }
 
-impl<'a, F, I> BorrowedBlock<'a, F>
+impl<'a, F> BorrowedBlock<'a, F>
 where
-    F: Fn() -> I,
-    I: Iterator<Item = Cid>,
+    F: Fn() -> anyhow::Result<Vec<Cid>>,
 {
     fn new(cid: Cid, data: &'a [u8], links: F) -> Self {
         Self { cid, data, links }
     }
 }
 
-impl<'a, F, I> Block for BorrowedBlock<'a, F>
+impl<'a, F> Block for BorrowedBlock<'a, F>
 where
-    F: Fn() -> I,
-    I: Iterator<Item = Cid>,
+    F: Fn() -> anyhow::Result<Vec<Cid>>,
 {
-    type I = I;
-
     fn cid(&self) -> &Cid {
         &self.cid
     }
@@ -295,7 +288,7 @@ where
         self.data
     }
 
-    fn links(&self) -> Self::I {
+    fn links(&self) -> anyhow::Result<Vec<Cid>> {
         (self.links)()
     }
 }
@@ -568,8 +561,9 @@ impl BlockStore {
                 .map(|block| {
                     let cid_bytes = CidBytes::try_from(block.cid())?;
                     let links = block
-                        .links()
-                        .map(|x| CidBytes::try_from(&x))
+                        .links()?
+                        .iter()
+                        .map(CidBytes::try_from)
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
                     let id = add_block(txn, &cid_bytes, &block.data(), links, alias)?;
                     Ok(BlockInfo::new(id, block.cid(), block.data()))
@@ -598,7 +592,7 @@ impl BlockStore {
     where
         I: IntoIterator<Item = Cid> + Clone,
     {
-        let block = BorrowedBlock::new(*cid, data, move || links.clone().into_iter());
+        let block = BorrowedBlock::new(*cid, data, move || Ok(links.clone().into_iter().collect()));
         self.add_blocks(Some(block), alias)?;
         Ok(())
     }
@@ -629,7 +623,10 @@ impl BlockStore {
         })?;
         let infos = res
             .iter()
-            .filter_map(|(cid, res)| res.as_ref().map(|(id, data)| BlockInfo::new(*id, cid, data)))
+            .filter_map(|(cid, res)| {
+                res.as_ref()
+                    .map(|(id, data)| BlockInfo::new(*id, cid, data))
+            })
             .collect::<Vec<_>>();
         self.config.cache_tracker.blocks_accessed(infos);
         Ok(res

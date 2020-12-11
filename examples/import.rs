@@ -33,8 +33,6 @@ pub struct OldBlock {
 pub struct IpldBlock(libipld::Block<DefaultParams>);
 
 impl ipfs_sqlite_block_store::Block for IpldBlock {
-    type I = std::vec::IntoIter<Cid>;
-
     fn cid(&self) -> &Cid {
         self.0.cid()
     }
@@ -43,10 +41,10 @@ impl ipfs_sqlite_block_store::Block for IpldBlock {
         self.0.data()
     }
 
-    fn links(&self) -> Self::I {
+    fn links(&self) -> anyhow::Result<Vec<Cid>> {
         let mut links = Vec::new();
-        self.0.references(&mut links).unwrap();
-        links.into_iter()
+        self.0.references(&mut links)?;
+        Ok(links)
     }
 }
 
