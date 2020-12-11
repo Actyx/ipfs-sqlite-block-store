@@ -85,8 +85,23 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.get_block(&cid))
     }
 
+    pub fn get_blocks<I: IntoIterator<Item = Cid> + Send + 'static>(
+        &self,
+        cids: I,
+    ) -> AsyncResult<impl Iterator<Item = (Cid, Option<Vec<u8>>)>> {
+        self.unblock(move |store| store.get_blocks(cids))
+    }
+
     pub fn has_block(&self, cid: Cid) -> AsyncResult<bool> {
         self.unblock(move |store| store.has_block(&cid))
+    }
+
+    pub fn has_blocks<I, O>(&self, cids: I) -> AsyncResult<O>
+    where
+        I: IntoIterator<Item = Cid> + Send + 'static,
+        O: FromIterator<(Cid, bool)> + Send + 'static,
+    {
+        self.unblock(move |store| store.has_blocks(cids))
     }
 
     pub fn has_cid(&self, cid: Cid) -> AsyncResult<bool> {
@@ -147,16 +162,6 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         })
     }
 
-    /// helper to give a piece of code mutable, blocking access on the store
-    fn unblock<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut BlockStore) -> T + Send + 'static,
-    ) -> BoxFuture<'static, T> {
-        let inner = self.inner.clone();
-        let runtime = self.runtime.clone();
-        runtime.unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
-    }
-
     /// A gc loop that runs incremental gc in regular intervals
     ///
     /// Gc will run as long as this future is polled. GC is a two step process. First, the
@@ -176,6 +181,16 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
                 .await?;
             self.runtime.sleep(config.interval / 2).await;
         }
+    }
+
+    /// helper to give a piece of code mutable, blocking access on the store
+    fn unblock<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut BlockStore) -> T + Send + 'static,
+    ) -> BoxFuture<'static, T> {
+        let inner = self.inner.clone();
+        let runtime = self.runtime.clone();
+        runtime.unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
     }
 }
 

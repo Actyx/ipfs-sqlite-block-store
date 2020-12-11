@@ -596,25 +596,10 @@ impl BlockStore {
         self.add_blocks(Some(block), alias)?;
         Ok(())
     }
-    /// Get data for a block
-    ///
-    /// Will return None if we don't have the data
-    pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
-        let cid_bytes = CidBytes::try_from(cid)?;
-        let result = in_ro_txn(&self.conn, |txn| get_block(txn, cid_bytes))?;
-        Ok(result.map(|(id, block)| {
-            // track the cache access
-            self.config
-                .cache_tracker
-                .blocks_accessed(vec![BlockInfo::new(id, cid, block.as_ref())]);
-            block
-        }))
-    }
     /// Get multiple blocks in a single read transaction
-    pub fn get_blocks<I, O>(&mut self, cids: I) -> Result<O>
+    pub fn get_blocks<I>(&mut self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
     where
         I: IntoIterator<Item = Cid>,
-        O: FromIterator<(Cid, Option<Vec<u8>>)>,
     {
         let res = in_ro_txn(&self.conn, |txn| {
             cids.into_iter()
@@ -631,7 +616,12 @@ impl BlockStore {
         self.config.cache_tracker.blocks_accessed(infos);
         Ok(res
             .into_iter()
-            .map(|(cid, res)| (cid, res.map(|(_, data)| data)))
-            .collect::<O>())
+            .map(|(cid, res)| (cid, res.map(|(_, data)| data))))
+    }
+    /// Get data for a block
+    ///
+    /// Will return None if we don't have the data
+    pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
+        Ok(self.get_blocks(std::iter::once(*cid))?.next().unwrap().1)
     }
 }
