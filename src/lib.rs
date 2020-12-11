@@ -401,6 +401,21 @@ impl BlockStore {
         in_ro_txn(&self.conn, |txn| has_block(txn, cid))
     }
 
+    /// Look up multiple blocks in one read transaction
+    pub fn has_blocks<I, O>(&self, cids: I) -> Result<O>
+    where
+        I: IntoIterator<Item = Cid>,
+        O: FromIterator<(Cid, bool)>,
+    {
+        in_ro_txn(&self.conn, |txn| {
+            cids.into_iter()
+                .map(|cid| -> Result<(Cid, bool)> {
+                    Ok((cid, has_block(txn, CidBytes::try_from(&cid)?)?))
+                })
+                .collect::<crate::Result<O>>()
+        })
+    }
+
     /// Get the stats for the store.
     ///
     /// The stats are kept up to date, so this is fast.
@@ -600,5 +615,26 @@ impl BlockStore {
                 .blocks_accessed(vec![BlockInfo::new(id, cid, block.as_ref())]);
             block
         }))
+    }
+    /// Get multiple blocks in a single read transaction
+    pub fn get_blocks<I, O>(&mut self, cids: I) -> Result<O>
+    where
+        I: IntoIterator<Item = Cid>,
+        O: FromIterator<(Cid, Option<Vec<u8>>)>,
+    {
+        let res = in_ro_txn(&self.conn, |txn| {
+            cids.into_iter()
+                .map(|cid| Ok((cid, get_block(txn, &CidBytes::try_from(&cid)?)?)))
+                .collect::<crate::Result<Vec<_>>>()
+        })?;
+        let infos = res
+            .iter()
+            .filter_map(|(cid, res)| res.clone().map(|(id, data)| BlockInfo::new(id, cid, &data)))
+            .collect::<Vec<_>>();
+        self.config.cache_tracker.blocks_accessed(infos);
+        Ok(res
+            .into_iter()
+            .map(|(cid, res)| (cid, res.map(|(_, data)| data)))
+            .collect::<O>())
     }
 }
