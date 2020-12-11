@@ -123,6 +123,14 @@ impl SizeTargets {
     pub fn exceeded(&self, stats: &StoreStats) -> bool {
         stats.count > self.count || stats.size > self.size
     }
+
+    /// Size targets that can not be reached. This can be used to disable gc.
+    pub fn max_value() -> Self {
+        Self {
+            count: u64::max_value(),
+            size: u64::max_value(),
+        }
+    }
 }
 
 #[derive(Debug)]

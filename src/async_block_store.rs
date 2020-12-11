@@ -1,5 +1,6 @@
 use crate::{Block, BlockStore, StoreStats, TempPin};
 use futures::future::BoxFuture;
+use futures::prelude::*;
 use libipld::Cid;
 use std::{
     iter::FromIterator,
@@ -28,7 +29,7 @@ pub struct AsyncTempPin(Arc<TempPin>);
 /// Adapter for a runtime such as tokio or async_std
 pub trait RuntimeAdapter: Clone + 'static {
     /// run a blocking block of code, most likely involving IO, on a different thread.
-    fn unblock<F, T>(self, f: F) -> BoxFuture<'static, T>
+    fn unblock<F, T>(self, f: F) -> BoxFuture<'static, anyhow::Result<T>>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static;
@@ -51,9 +52,8 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         }
     }
 
-    pub async fn temp_pin(&self) -> AsyncTempPin {
-        self.unblock(|store| AsyncTempPin::new(store.temp_pin()))
-            .await
+    pub fn temp_pin(&self) -> AsyncResult<AsyncTempPin> {
+        self.unblock(|store| Ok(AsyncTempPin::new(store.temp_pin())))
     }
 
     pub fn alias(&self, name: Vec<u8>, link: Option<Cid>) -> AsyncResult<()> {
@@ -140,7 +140,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
 
     pub fn add_blocks<B: Block + Send + 'static>(
         &self,
-        blocks: Vec<B>,
+        blocks: impl IntoIterator<Item = B> + Send + 'static,
         alias: Option<AsyncTempPin>,
     ) -> AsyncResult<()> {
         self.unblock(move |store| {
@@ -154,8 +154,9 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         cid: Cid,
         data: Vec<u8>,
         links: Vec<Cid>,
-        alias: Option<AsyncTempPin>,
+        alias: Option<&AsyncTempPin>,
     ) -> AsyncResult<()> {
+        let alias = alias.cloned();
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());
             store.add_block(&cid, data.as_ref(), links, alias)
@@ -171,7 +172,8 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     pub async fn gc_loop(self, config: GcConfig) -> crate::Result<()> {
         // initial delay so we don't start gc directly on startup
         self.runtime.sleep(config.interval / 2).await;
-        loop {
+        // stop the loop as soon as we are the only thing left running
+        while self.ref_count() > 1 {
             debug!("gc_loop running incremental gc");
             self.incremental_gc(config.min_blocks, config.target_duration)
                 .await?;
@@ -181,16 +183,26 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
                 .await?;
             self.runtime.sleep(config.interval / 2).await;
         }
+        Ok(())
+    }
+
+    /// number of references to this async wrapper
+    pub fn ref_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
     }
 
     /// helper to give a piece of code mutable, blocking access on the store
     fn unblock<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut BlockStore) -> T + Send + 'static,
-    ) -> BoxFuture<'static, T> {
+        f: impl FnOnce(&mut BlockStore) -> crate::Result<T> + Send + 'static,
+    ) -> AsyncResult<T> {
         let inner = self.inner.clone();
         let runtime = self.runtime.clone();
-        runtime.unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
+        runtime
+            .unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
+            .err_into()
+            .map(|x| x.and_then(|x| x))
+            .boxed()
     }
 }
 
@@ -218,6 +230,12 @@ pub struct GcConfig {
     /// But as soon as this duration is exceeded, the incremental gc will stop doing additional
     /// work.
     pub target_duration: Duration,
+}
+
+impl GcConfig {
+    pub fn with_interval(self, interval: Duration) -> Self {
+        Self { interval, ..self }
+    }
 }
 
 impl Default for GcConfig {
