@@ -629,7 +629,7 @@ impl BlockStore {
         })?;
         let infos = res
             .iter()
-            .filter_map(|(cid, res)| res.clone().map(|(id, data)| BlockInfo::new(id, cid, &data)))
+            .filter_map(|(cid, res)| res.as_ref().map(|(id, data)| BlockInfo::new(*id, cid, data)))
             .collect::<Vec<_>>();
         self.config.cache_tracker.blocks_accessed(infos);
         Ok(res
