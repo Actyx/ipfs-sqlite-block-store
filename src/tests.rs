@@ -51,7 +51,7 @@ fn insert_get() -> anyhow::Result<()> {
     let a = cid("a");
     let b = cid("b");
     let c = cid("c");
-    store.add_block(&a, b"abcd", vec![b, c], None)?;
+    store.put_block(&a, b"abcd", vec![b, c], None)?;
     // we should have all three cids
     assert!(store.has_cid(&a)?);
     assert!(store.has_cid(&b)?);
@@ -89,9 +89,9 @@ fn incremental_insert() -> anyhow::Result<()> {
     // alias before even adding the block
     store.alias(b"alias1", Some(&a))?;
     assert!(store.has_cid(&a)?);
-    store.add_block(&a, b"abcd", vec![b, c], None)?;
+    store.put_block(&a, b"abcd", vec![b, c], None)?;
     store.gc()?;
-    store.add_block(&c, b"fubar", vec![d, e], None)?;
+    store.put_block(&c, b"fubar", vec![d, e], None)?;
     store.gc()?;
     // we should have all five cids
     assert!(store.has_cid(&a)?);
@@ -136,7 +136,7 @@ fn size_targets() -> anyhow::Result<()> {
     for i in 0..2 {
         let cid = pinned(i);
         let data = data(&cid, 1000);
-        store.add_block(&cid, &data, vec![], None)?;
+        store.put_block(&cid, &data, vec![], None)?;
         store.alias(cid.to_bytes(), Some(&cid))?;
     }
 
@@ -144,7 +144,7 @@ fn size_targets() -> anyhow::Result<()> {
     for i in 0..8 {
         let cid = unpinned(i);
         let data = data(&cid, 1000);
-        store.add_block(&cid, &data, vec![], None)?;
+        store.put_block(&cid, &data, vec![], None)?;
     }
 
     // check that gc does nothing
@@ -158,7 +158,7 @@ fn size_targets() -> anyhow::Result<()> {
     for i in 8..13 {
         let cid = cid(&format!("{}", i));
         let data = data(&cid, 1000);
-        store.add_block(&cid, &data, vec![], None)?;
+        store.put_block(&cid, &data, vec![], None)?;
     }
 
     // check that gc gets triggered and removes min_blocks
@@ -201,7 +201,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
     for i in 0..2 {
         let cid = pinned(i);
         let data = data(&cid, 1000);
-        store.add_block(&cid, &data, vec![], None)?;
+        store.put_block(&cid, &data, vec![], None)?;
         store.alias(cid.to_bytes(), Some(&cid))?;
     }
 
@@ -209,7 +209,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
     for i in 0..8 {
         let cid = unpinned(i);
         let data = data(&cid, 1000);
-        store.add_block(&cid, &data, vec![], None)?;
+        store.put_block(&cid, &data, vec![], None)?;
     }
 
     // check that gc does nothing
@@ -223,7 +223,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
     for i in 8..13 {
         let cid = cid(&format!("{}", i));
         let data = data(&cid, 1000);
-        store.add_block(&cid, &data, vec![], None)?;
+        store.put_block(&cid, &data, vec![], None)?;
     }
 
     // access one of the existing unpinned blocks to move it to the front
@@ -284,11 +284,11 @@ fn test_reverse_alias() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let cid = pinned(0);
     let data = data(&cid, 1);
-    store.add_block(&cid, &data, vec![], None)?;
+    store.put_block(&cid, &data, vec![], None)?;
     store.alias(&b"leaf"[..], Some(&cid))?;
     assert_eq!(store.reverse_alias(&cid)?, vec![b"leaf".to_vec()]);
     let cid2 = pinned(1);
-    store.add_block(&cid2, &data, vec![cid], None)?;
+    store.put_block(&cid2, &data, vec![cid], None)?;
     store.alias(&b"root"[..], Some(&cid2))?;
     assert_eq!(
         store.reverse_alias(&cid)?,
@@ -321,11 +321,11 @@ fn temp_pin() -> anyhow::Result<()> {
     let b = cid("b");
     let alias = store.temp_pin();
 
-    store.add_block(&a, b"abcd", vec![], Some(&alias))?;
+    store.put_block(&a, b"abcd", vec![], Some(&alias))?;
     store.gc()?;
     assert!(store.has_block(&a)?);
 
-    store.add_block(&b, b"fubar", vec![], Some(&alias))?;
+    store.put_block(&b, b"fubar", vec![], Some(&alias))?;
     store.gc()?;
     assert!(store.has_block(&b)?);
 
@@ -346,13 +346,13 @@ async fn temp_pin_async() -> anyhow::Result<()> {
     let alias = store.temp_pin().await?;
 
     store
-        .add_block(a, b"abcd".to_vec(), vec![], Some(&alias))
+        .put_block(a, b"abcd".to_vec(), vec![], Some(&alias))
         .await?;
     store.gc().await?;
     assert!(store.has_block(a).await?);
 
     store
-        .add_block(b, b"fubar".to_vec(), vec![], Some(&alias))
+        .put_block(b, b"fubar".to_vec(), vec![], Some(&alias))
         .await?;
     store.gc().await?;
     assert!(store.has_block(b).await?);
@@ -382,9 +382,9 @@ async fn gc_loop() -> anyhow::Result<()> {
     let b = cid("b");
     let alias = store.temp_pin().await?;
     store
-        .add_block(a, b"fubar".to_vec(), vec![], Some(&alias))
+        .put_block(a, b"fubar".to_vec(), vec![], Some(&alias))
         .await?;
-    store.add_block(b, b"fubar".to_vec(), vec![], None).await?;
+    store.put_block(b, b"fubar".to_vec(), vec![], None).await?;
     // give GC opportunity to run
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(store.has_block(a).await?);

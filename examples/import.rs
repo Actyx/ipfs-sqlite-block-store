@@ -96,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     for block in &block_iter.chunks(1000) {
         info!("adding 1000 block chunk");
         let blocks = block.collect::<anyhow::Result<Vec<_>>>()?;
-        store.add_blocks(blocks, None)?;
+        store.put_blocks(blocks, None)?;
     }
 
     for (alias, cid) in query_roots(roots)?.into_iter() {

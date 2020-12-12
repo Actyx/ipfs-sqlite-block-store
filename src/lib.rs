@@ -557,7 +557,7 @@ impl BlockStore {
     /// - `alias` an optional temporary alias.
     ///   This can be used to incrementally add blocks without having to worry about them being garbage
     ///   collected before they can be pinned with a permanent alias.
-    pub fn add_blocks<B: Block>(
+    pub fn put_blocks<B: Block>(
         &mut self,
         blocks: impl IntoIterator<Item = B>,
         alias: Option<&TempPin>,
@@ -573,7 +573,7 @@ impl BlockStore {
                         .iter()
                         .map(CidBytes::try_from)
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-                    let id = add_block(txn, &cid_bytes, &block.data(), links, alias)?;
+                    let id = put_block(txn, &cid_bytes, &block.data(), links, alias)?;
                     Ok(BlockInfo::new(id, block.cid(), block.data()))
                 })
                 .collect::<Result<Vec<_>>>()?)
@@ -583,14 +583,14 @@ impl BlockStore {
     }
     /// Add a single block
     ///
-    /// this is just a convenience method that calls add_blocks internally.
+    /// this is just a convenience method that calls put_blocks internally.
     ///
     /// - `cid` the cid
     ///   This should be a hash of the data, with some format specifier.
     /// - `data` a blob
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
-    pub fn add_block<I>(
+    pub fn put_block<I>(
         &mut self,
         cid: &Cid,
         data: &[u8],
@@ -601,7 +601,7 @@ impl BlockStore {
         I: IntoIterator<Item = Cid> + Clone,
     {
         let block = BorrowedBlock::new(*cid, data, move || Ok(links.clone().into_iter().collect()));
-        self.add_blocks(Some(block), alias)?;
+        self.put_blocks(Some(block), alias)?;
         Ok(())
     }
     /// Get multiple blocks in a single read transaction

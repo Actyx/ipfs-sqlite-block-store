@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
                 OwnedBlock::new(cid, data, vec![])
             })
             .collect::<Vec<_>>();
-        store.add_blocks(blocks, None)?;
+        store.put_blocks(blocks, None)?;
     }
     let mut sum = 0usize;
     let mut count = 0usize;

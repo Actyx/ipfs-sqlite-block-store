@@ -159,7 +159,7 @@ fn migrate_from_v0(txn: &Transaction) -> anyhow::Result<()> {
         let block = libipld::Block::<DefaultParams>::new(cid, data)?;
         let mut set = BTreeSet::new();
         block.references(&mut set)?;
-        add_block(
+        put_block(
             &txn,
             &block.cid().to_bytes(),
             block.data(),
@@ -334,7 +334,7 @@ pub(crate) fn delete_temp_pin(txn: &Transaction, alias: i64) -> rusqlite::Result
     Ok(())
 }
 
-pub(crate) fn add_block<C: ToSql>(
+pub(crate) fn put_block<C: ToSql>(
     txn: &Transaction,
     key: &C,
     data: &[u8],
