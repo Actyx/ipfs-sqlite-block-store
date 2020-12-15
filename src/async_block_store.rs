@@ -60,6 +60,15 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.alias(&name, link.as_ref()))
     }
 
+    pub fn alias_many(
+        &self,
+        aliases: impl IntoIterator<Item = (impl AsRef<[u8]>, Option<Cid>)> + Send + 'static,
+    ) -> AsyncResult<()> {
+        self.unblock(move |store| {
+            store.alias_many(aliases)
+        })
+    }
+
     pub fn gc(&self) -> AsyncResult<()> {
         self.unblock(|store| store.gc())
     }

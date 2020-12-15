@@ -377,9 +377,20 @@ impl BlockStore {
 
     /// Add a permanent named alias/pin for a root
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
-        let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
+        self.alias_many(std::iter::once((name, link.cloned())))
+    }
+
+    /// Add multiple permanent named aliases
+    pub fn alias_many(
+        &mut self,
+        aliases: impl IntoIterator<Item = (impl AsRef<[u8]>, Option<Cid>)>,
+    ) -> crate::Result<()> {
         in_txn(&mut self.conn, |txn| {
-            alias(txn, name.as_ref(), link.as_ref())
+            for (name, link) in aliases.into_iter() {
+                let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(&x)).transpose()?;
+                alias(txn, name.as_ref(), link.as_ref())?;
+            }
+            Ok(())
         })
     }
 
