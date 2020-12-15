@@ -184,7 +184,7 @@ fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
 /// returns the number and size of blocks, excluding orphaned blocks, computed from scratch
 pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
     let (count, size): (i64, i64) = txn.prepare(
-        "SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id",
+"SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) FROM cids JOIN blocks ON id = block_id"
     )?
     .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(StoreStats {
@@ -238,7 +238,7 @@ WITH RECURSIVE
     (
         SELECT block_id FROM aliases UNION SELECT block_id FROM temp_pins
         UNION ALL
-        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of ON descendant_of.id=refs.parent_id
     )
 SELECT id FROM
     cids
@@ -435,13 +435,13 @@ WITH RECURSIVE
     (
         SELECT id FROM cids WHERE cid = ?
         UNION ALL
-        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of ON descendant_of.id=refs.parent_id
     ),
     descendant_ids as (
         SELECT DISTINCT id FROM descendant_of
     )
     -- retrieve corresponding cids - this is a set because of select distinct
-    SELECT cid from cids,descendant_ids WHERE cids.id = descendant_ids.id;
+    SELECT cid from cids JOIN descendant_ids ON cids.id = descendant_ids.id;
 "#,
         )?
         .query_map(&[cid], |row| row.get(0))?
@@ -464,14 +464,14 @@ WITH RECURSIVE
     descendant_of(id) AS (
         SELECT ?
         UNION ALL
-        SELECT DISTINCT child_id FROM refs JOIN descendant_of WHERE descendant_of.id=refs.parent_id
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of ON descendant_of.id=refs.parent_id
     ),
     -- find orphaned ids
     orphaned_ids as (
       SELECT DISTINCT id FROM descendant_of LEFT JOIN blocks ON descendant_of.id = blocks.block_id WHERE blocks.block_id IS NULL
     )
     -- retrieve corresponding cids - this is a set because of select distinct
-SELECT cid from cids,orphaned_ids WHERE cids.id = orphaned_ids.id;
+SELECT cid from cids JOIN orphaned_ids ON cids.id = orphaned_ids.id
 "#,
     )?
         .query_map(&[id], |row| row.get(0))?
@@ -505,7 +505,7 @@ WITH RECURSIVE
     (
         SELECT ?
         UNION ALL
-        SELECT DISTINCT parent_id FROM refs JOIN ancestor_of WHERE ancestor_of.id=refs.child_id
+        SELECT DISTINCT parent_id FROM refs JOIN ancestor_of ON ancestor_of.id=refs.child_id
     )
 SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = block_id;
 "#,
@@ -517,7 +517,7 @@ SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = bloc
 /// get all ids corresponding to cids that we have a block for
 pub(crate) fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
     Ok(txn
-        .prepare_cached(r#"SELECT id FROM cids, blocks WHERE id = block_id"#)?
+        .prepare_cached(r#"SELECT id FROM cids JOIN blocks ON id = block_id"#)?
         .query_map(NO_PARAMS, |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?)
 }
@@ -525,7 +525,7 @@ pub(crate) fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
 /// get all cids of blocks in the store
 pub(crate) fn get_block_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<C>> {
     Ok(txn
-        .prepare_cached(r#"SELECT cid FROM cids, blocks WHERE id = block_id"#)?
+        .prepare_cached(r#"SELECT cid FROM cids JOIN blocks ON id = block_id"#)?
         .query_map(NO_PARAMS, |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
