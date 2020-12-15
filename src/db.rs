@@ -420,7 +420,7 @@ pub(crate) fn has_cid(txn: &Transaction, cid: impl ToSql) -> crate::Result<bool>
         .is_some())
 }
 
-/// get the descendants of an cid.
+/// get the descendants of a cid.
 /// This just uses the refs table, so it does not ensure that we actually have data for each cid.
 /// The value itself is included.
 pub(crate) fn get_descendants<C: ToSql + FromSql>(
