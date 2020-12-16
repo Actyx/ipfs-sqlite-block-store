@@ -62,9 +62,6 @@ CREATE TABLE IF NOT EXISTS refs (
       ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_refs_parent_id
-ON refs (parent_id);
-
 CREATE INDEX IF NOT EXISTS idx_refs_child_id
 ON refs (child_id);
 
@@ -97,9 +94,6 @@ CREATE TABLE IF NOT EXISTS temp_pins (
 
 CREATE INDEX IF NOT EXISTS idx_temp_pins_block_id
 ON temp_pins (block_id);
-
-CREATE INDEX IF NOT EXISTS idx_temp_pins_id
-ON temp_pins (id);
 
 -- delete temp aliases that were not dropped because of crash
 DELETE FROM temp_pins;
