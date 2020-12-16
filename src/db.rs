@@ -586,7 +586,7 @@ pub(crate) fn in_txn<T>(
             trace!("committing transaction!");
             if let Err(cause) = txn.commit() {
                 error!("unable to commit transaction! {}", cause);
-                Err(cause)?;
+                return Err(cause.into());
             }
             Ok(value)
         }
