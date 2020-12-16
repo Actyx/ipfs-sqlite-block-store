@@ -64,9 +64,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         &self,
         aliases: impl IntoIterator<Item = (impl AsRef<[u8]>, Option<Cid>)> + Send + 'static,
     ) -> AsyncResult<()> {
-        self.unblock(move |store| {
-            store.alias_many(aliases)
-        })
+        self.unblock(move |store| store.alias_many(aliases))
     }
 
     pub fn gc(&self) -> AsyncResult<()> {

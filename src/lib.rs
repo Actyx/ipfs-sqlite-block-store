@@ -222,10 +222,20 @@ impl Drop for TempPin {
 fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
     let txn = conn.transaction()?;
     let result = f(&txn);
-    if result.is_ok() {
-        txn.commit()?;
+    match result {
+        Ok(value) => {
+            trace!("committing transaction!");
+            if let Err(cause) = txn.commit() {
+                error!("unable to commit transaction! {}", cause);
+                Err(cause)?;
+            }
+            Ok(value)
+        }
+        Err(cause) => {
+            error!("rolling back transaction! {}", cause);
+            Err(cause)
+        }
     }
-    result
 }
 
 /// execute a statement in a readonly transaction
