@@ -82,12 +82,6 @@ fn main() -> anyhow::Result<()> {
     }
     let (tree_root, tree_blocks) = build_tree("test-tree", 10, 4)?;
     let (_list_root, list_blocks) = build_chain("chain", 10000)?;
-    // for block in list_blocks {
-    //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
-    // }
-    // for block in tree_blocks {
-    //     store.add(block.cid.as_ref(), block.data.as_ref(), &block.links.iter().map(|x| x.as_ref()).collect::<Vec<_>>())?;
-    // }
     store.put_blocks(tree_blocks, None)?;
     store.put_blocks(list_blocks, None)?;
     println!(
@@ -95,11 +89,6 @@ fn main() -> anyhow::Result<()> {
         tree_root,
         store.get_descendants::<Vec<_>>(&tree_root)?.len(),
     );
-    // println!(
-    //     "descendants of {:?} {:?}",
-    //     list_root,
-    //     store.get_descendants(list_root.as_ref())
-    // );
     store.put_block(&cid("a"), b"adata", vec![cid("b"), cid("c")], None)?;
     println!(
         "{:?}",
@@ -120,9 +109,5 @@ fn main() -> anyhow::Result<()> {
     store.gc()?;
     let dt = Instant::now() - t0;
     println!("{}", dt.as_secs_f64());
-    // let atime = store.gc(100000)?;
-    // println!("{:?}", atime);
-    // println!("ancestors {:?}", store.get_ancestors(b"b"));
-    // println!("descendants {:?}", store.get_descendants(b"a"));
     Ok(())
 }
