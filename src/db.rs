@@ -140,7 +140,7 @@ fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
     Ok(num > 0)
 }
 
-fn migrate_from_v0(txn: &Transaction) -> anyhow::Result<()> {
+fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
     info!("executing migration from v0 to v1");
     txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0")?;
     // drop the old refs table, since the content can be extracted from blocks_v0
@@ -169,6 +169,7 @@ fn migrate_from_v0(txn: &Transaction) -> anyhow::Result<()> {
             None,
         )?;
     }
+    info!("dropping table blocks_v0");
     txn.execute_batch("DROP TABLE blocks_v0")?;
     drop(stmt);
     info!("migration from v0 to v1 done!");
@@ -547,7 +548,7 @@ pub(crate) fn init_db(conn: &mut Connection, is_memory: bool) -> anyhow::Result<
     assert_eq!(journal_mode, expected_journal_mode.to_owned());
     let txn = conn.transaction()?;
     if user_version(&txn)? == 0 && table_exists(&txn, "blocks")? {
-        migrate_from_v0(&txn)?;
+        migrate_v0_v1(&txn)?;
     } else {
         txn.execute_batch(INIT)?;
     }
