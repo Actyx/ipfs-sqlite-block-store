@@ -546,13 +546,14 @@ pub(crate) fn init_db(conn: &mut Connection, is_memory: bool) -> anyhow::Result<
     let expected_journal_mode = if is_memory { "memory" } else { "wal" };
     assert_eq!(foreign_keys, 1);
     assert_eq!(journal_mode, expected_journal_mode.to_owned());
-    let txn = conn.transaction()?;
-    if user_version(&txn)? == 0 && table_exists(&txn, "blocks")? {
-        migrate_v0_v1(&txn)?;
-    } else {
-        txn.execute_batch(INIT)?;
-    }
-    txn.commit()?;
+    // use in_txn so we get the logging
+    in_txn(conn, |txn| {
+        if user_version(&txn)? == 0 && table_exists(&txn, "blocks")? {
+            Ok(migrate_v0_v1(&txn)?)
+        } else {
+            Ok(txn.execute_batch(INIT)?)
+        }
+    })?;
     assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
     Ok(())
 }
@@ -588,4 +589,31 @@ pub(crate) fn log_execution_time<T, E>(
         debug!("{} took {}us", msg, dt.as_micros());
     };
     result
+}
+
+/// execute a statement in a write transaction
+pub(crate) fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> crate::Result<T>) -> crate::Result<T> {
+    let txn = conn.transaction()?;
+    let result = f(&txn);
+    match result {
+        Ok(value) => {
+            trace!("committing transaction!");
+            if let Err(cause) = txn.commit() {
+                error!("unable to commit transaction! {}", cause);
+                Err(cause)?;
+            }
+            Ok(value)
+        }
+        Err(cause) => {
+            error!("rolling back transaction! {}", cause);
+            Err(cause)
+        }
+    }
+}
+
+/// execute a statement in a readonly transaction
+/// nested transactions are not allowed here.
+pub(crate) fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> crate::Result<T>) -> crate::Result<T> {
+    let txn = conn.unchecked_transaction()?;
+    f(&txn)
 }

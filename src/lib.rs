@@ -71,7 +71,7 @@ use cache::{BlockInfo, CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
-use rusqlite::{Connection, DatabaseName, Transaction};
+use rusqlite::{Connection, DatabaseName};
 use std::{
     convert::TryFrom,
     fmt,
@@ -216,33 +216,6 @@ impl Drop for TempPin {
             self.expired_temp_pins.lock().unwrap().push(alias);
         }
     }
-}
-
-/// execute a statement in a write transaction
-fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
-    let txn = conn.transaction()?;
-    let result = f(&txn);
-    match result {
-        Ok(value) => {
-            trace!("committing transaction!");
-            if let Err(cause) = txn.commit() {
-                error!("unable to commit transaction! {}", cause);
-                Err(cause)?;
-            }
-            Ok(value)
-        }
-        Err(cause) => {
-            error!("rolling back transaction! {}", cause);
-            Err(cause)
-        }
-    }
-}
-
-/// execute a statement in a readonly transaction
-/// nested transactions are not allowed here.
-fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
-    let txn = conn.unchecked_transaction()?;
-    f(&txn)
 }
 
 /// An ipfs block
