@@ -28,16 +28,13 @@ use tracing::*;
 use crate::{cache::CacheTracker, SizeTargets, StoreStats};
 
 const PRAGMAS: &str = r#"
+-- this must be done before changing the database via the CLI!
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
--- PRAGMA synchronous = NORMAL;
+-- this is the most conservative mode. This only works if we have few, large transactions
 PRAGMA synchronous = FULL;
+-- I tried different even larger values for this. Did not make a difference.
 PRAGMA page_size = 4096;
--- PRAGMA locking_mode = EXCLUSIVE;
--- PRAGMA page_size = 8192;
--- PRAGMA page_size = 16384;
--- PRAGMA synchronous = OFF;
--- PRAGMA journal_mode = MEMORY;
 "#;
 
 const INIT: &str = r#"
@@ -578,7 +575,10 @@ pub(crate) fn log_execution_time<T, E>(
 }
 
 /// execute a statement in a write transaction
-pub(crate) fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> crate::Result<T>) -> crate::Result<T> {
+pub(crate) fn in_txn<T>(
+    conn: &mut Connection,
+    f: impl FnOnce(&Transaction) -> crate::Result<T>,
+) -> crate::Result<T> {
     let txn = conn.transaction()?;
     let result = f(&txn);
     match result {
@@ -599,7 +599,10 @@ pub(crate) fn in_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> c
 
 /// execute a statement in a readonly transaction
 /// nested transactions are not allowed here.
-pub(crate) fn in_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> crate::Result<T>) -> crate::Result<T> {
+pub(crate) fn in_ro_txn<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Transaction) -> crate::Result<T>,
+) -> crate::Result<T> {
     let txn = conn.unchecked_transaction()?;
     f(&txn)
 }
