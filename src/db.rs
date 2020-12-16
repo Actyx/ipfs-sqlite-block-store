@@ -48,13 +48,10 @@ CREATE TABLE IF NOT EXISTS cids (
     cid BLOB UNIQUE NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_cids_id
-ON cids (id);
-
 CREATE TABLE IF NOT EXISTS refs (
     parent_id INTEGER NOT NULL,
     child_id INTEGER NOT NULL,
-    UNIQUE(parent_id,child_id)
+    PRIMARY KEY(parent_id,child_id)
     CONSTRAINT fk_parent_id
       FOREIGN KEY (parent_id)
       REFERENCES cids(id)
@@ -72,17 +69,12 @@ CREATE INDEX IF NOT EXISTS idx_refs_child_id
 ON refs (child_id);
 
 CREATE TABLE IF NOT EXISTS blocks (
-    block_id INTEGER PRIMARY_KEY,
+    block_id INTEGER PRIMARY KEY,
     block BLOB NOT NULL
 );
 
--- for some reason this index is required to make the on delete cascade
--- fast, despite block_id being a PRIMARY_KEY.
-CREATE INDEX IF NOT EXISTS idx_blocks_block_id
-ON blocks (block_id);
-
 CREATE TABLE IF NOT EXISTS aliases (
-    name blob UNIQUE NOT NULL,
+    name blob NOT NULL PRIMARY KEY,
     block_id INTEGER NOT NULL,
     CONSTRAINT fk_block_id
       FOREIGN KEY (block_id)
@@ -96,7 +88,7 @@ ON aliases (block_id);
 CREATE TABLE IF NOT EXISTS temp_pins (
     id INTEGER NOT NULL,
     block_id INTEGER NOT NULL,
-    UNIQUE(id,block_id)
+    PRIMARY KEY(id,block_id)
     CONSTRAINT fk_block_id
       FOREIGN KEY (block_id)
       REFERENCES cids(id)
