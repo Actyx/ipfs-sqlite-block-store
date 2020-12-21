@@ -363,6 +363,15 @@ impl BlockStore {
         self.alias_many(std::iter::once((name, link.cloned())))
     }
 
+    /// Resolves an alias to a cid.
+    pub fn resolve(&mut self, name: impl AsRef<[u8]>) -> crate::Result<Option<Cid>> {
+        in_txn(&mut self.conn, |txn| {
+            Ok(resolve::<CidBytes>(txn, name.as_ref())?
+                .map(|c| Cid::try_from(&c))
+                .transpose()?)
+        })
+    }
+
     /// Add multiple permanent named aliases
     pub fn alias_many(
         &mut self,
@@ -378,7 +387,7 @@ impl BlockStore {
     }
 
     /// Returns the aliases referencing a block.
-    pub fn reverse_alias(&mut self, cid: &Cid) -> crate::Result<Vec<Vec<u8>>> {
+    pub fn reverse_alias(&mut self, cid: &Cid) -> crate::Result<Option<Vec<Vec<u8>>>> {
         let cid = CidBytes::try_from(cid)?;
         in_txn(&mut self.conn, |txn| reverse_alias(txn, cid.as_ref()))
     }
