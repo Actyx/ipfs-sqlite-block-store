@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "ipfs-sqlite-block-store"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "derive_more",
