@@ -1,10 +1,10 @@
 use crate::{Block, BlockStore, StoreStats, TempPin};
+use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 use libipld::Cid;
 use std::{
     iter::FromIterator,
-    ops::DerefMut,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -12,8 +12,28 @@ use tracing::*;
 
 #[derive(Clone)]
 pub struct AsyncBlockStore<R> {
-    inner: Arc<Mutex<BlockStore>>,
+    inner: Option<Arc<Mutex<Inner>>>,
     runtime: R,
+}
+
+struct Inner {
+    store: BlockStore,
+    complete: oneshot::Sender<()>,
+}
+
+impl<R> Drop for AsyncBlockStore<R> {
+    fn drop(&mut self) {
+        // try to take the inner. If we can't take it, this is a double drop.
+        if let Some(inner) = self.inner.take() {
+            // we were the last holders of the arc
+            if let Ok(inner) = Arc::try_unwrap(inner) {
+                // try to unwrap the mutex
+                if let Ok(inner) = inner.into_inner() {
+                    let _ = inner.complete.send(());
+                }
+            }
+        }
+    }
 }
 
 impl AsyncTempPin {
@@ -44,12 +64,18 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     /// Wrap a block store in an asyc wrapper
     ///
     /// `runtime` A runtime adapter for your runtime of choice
-    /// `inner` The BlockStore to wrap
-    pub fn new(runtime: R, inner: BlockStore) -> Self {
-        Self {
-            runtime,
-            inner: Arc::new(Mutex::new(inner)),
-        }
+    /// `store` The BlockStore to wrap
+    ///
+    /// returns the async store and a future that completes when the store is dropped.
+    pub fn new(runtime: R, store: BlockStore) -> (Self, BoxFuture<'static, ()>) {
+        let (complete, receiver) = oneshot::channel();
+        (
+            Self {
+                runtime,
+                inner: Some(Arc::new(Mutex::new(Inner { store, complete }))),
+            },
+            receiver.map(|_| ()).boxed(),
+        )
     }
 
     pub fn temp_pin(&self) -> AsyncResult<AsyncTempPin> {
@@ -193,23 +219,31 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         Ok(())
     }
 
-    /// number of references to this async wrapper
-    pub fn ref_count(&self) -> usize {
-        Arc::strong_count(&self.inner)
-    }
-
     /// helper to give a piece of code mutable, blocking access on the store
     fn unblock<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut BlockStore) -> crate::Result<T> + Send + 'static,
     ) -> AsyncResult<T> {
-        let inner = self.inner.clone();
-        let runtime = self.runtime.clone();
-        runtime
-            .unblock(move || f(DerefMut::deref_mut(&mut inner.lock().unwrap())))
-            .err_into()
-            .map(|x| x.and_then(|x| x))
-            .boxed()
+        if let Some(inner) = self.inner.clone() {
+            let runtime = self.runtime.clone();
+            runtime
+                .unblock(move || f(&mut inner.lock().unwrap().store))
+                .err_into()
+                .map(|x| x.and_then(|x| x))
+                .boxed()
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+impl<R> AsyncBlockStore<R> {
+    /// number of references to this async wrapper
+    pub fn ref_count(&self) -> usize {
+        self.inner
+            .as_ref()
+            .map(|a| Arc::strong_count(a))
+            .unwrap_or_default()
     }
 }
 
