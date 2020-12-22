@@ -494,13 +494,10 @@ pub(crate) fn reverse_alias(
     txn: &Transaction,
     cid: impl ToSql,
 ) -> crate::Result<Option<Vec<Vec<u8>>>> {
-    let id = get_id(txn, cid)?;
-    if id.is_none() {
-        return Ok(None);
-    }
-    Ok(Some(
-        txn.prepare_cached(
-            r#"
+    if let Some(id) = get_id(txn, cid)? {
+        Ok(Some(
+            txn.prepare_cached(
+                r#"
 WITH RECURSIVE
     ancestor_of(id) AS
     (
@@ -510,11 +507,14 @@ WITH RECURSIVE
     )
 SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = block_id;
 "#,
-        )?
-        .query_map(params![id], |row| row.get(0))?
-        .filter_map(|a| a.transpose())
-        .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?,
-    ))
+            )?
+            .query_map(params![id], |row| row.get(0))?
+            .filter_map(|a| a.transpose())
+            .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?,
+        ))
+    } else {
+        Ok(None)
+    }
 }
 
 /// get all ids corresponding to cids that we have a block for
