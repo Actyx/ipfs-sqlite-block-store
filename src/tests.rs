@@ -280,19 +280,33 @@ fn test_migration() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_reverse_alias() -> anyhow::Result<()> {
+fn test_resolve() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let cid = pinned(0);
     let data = data(&cid, 1);
     store.put_block(&cid, &data, vec![], None)?;
     store.alias(&b"leaf"[..], Some(&cid))?;
-    assert_eq!(store.reverse_alias(&cid)?, vec![b"leaf".to_vec()]);
+    let cid2 = store.resolve(&b"leaf"[..])?;
+    assert_eq!(Some(cid), cid2);
+    Ok(())
+}
+
+#[test]
+fn test_reverse_alias() -> anyhow::Result<()> {
+    let mut store = BlockStore::memory(Config::default())?;
+    let cid = pinned(0);
+    let data = data(&cid, 1);
+    assert_eq!(store.reverse_alias(&cid)?, None);
+    store.put_block(&cid, &data, vec![], None)?;
+    assert_eq!(store.reverse_alias(&cid)?, Some(vec![]));
+    store.alias(&b"leaf"[..], Some(&cid))?;
+    assert_eq!(store.reverse_alias(&cid)?, Some(vec![b"leaf".to_vec()]));
     let cid2 = pinned(1);
     store.put_block(&cid2, &data, vec![cid], None)?;
     store.alias(&b"root"[..], Some(&cid2))?;
     assert_eq!(
         store.reverse_alias(&cid)?,
-        vec![b"leaf".to_vec(), b"root".to_vec()]
+        Some(vec![b"leaf".to_vec(), b"root".to_vec()])
     );
     Ok(())
 }

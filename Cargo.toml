@@ -13,14 +13,14 @@ anyhow = "1.0.34"
 derive_more = "0.99.11"
 fnv = "1.0.7"
 futures = "0.3.8"
-libipld = { version = "0.8.2" }
-multihash = { version = "0.13.1", default-features = false, features = ["sha2"] }
+libipld = { version = "0.9.0", default-features = false }
 rusqlite = { version = "0.24.1", features = ["backup"] }
 tracing = "0.1.22"
 
 [dev-dependencies]
 itertools = "0.9.0"
-libipld = { version = "0.8.2" }
+libipld = "0.9.0"
+multihash = { version = "0.13.1", default-features = false, features = ["sha2"] }
 tempdir = "0.3.7"
 tokio = { version = "0.3.5", features = ["full"] }
 tracing-subscriber = "0.2.15"

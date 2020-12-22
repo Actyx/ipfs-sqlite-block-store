@@ -479,11 +479,25 @@ pub(crate) fn alias<C: ToSql>(
     Ok(())
 }
 
-pub(crate) fn reverse_alias(txn: &Transaction, cid: impl ToSql) -> crate::Result<Vec<Vec<u8>>> {
-    let id = get_id(txn, cid)?;
+pub(crate) fn resolve<C: FromSql>(txn: &Transaction, name: &[u8]) -> crate::Result<Option<C>> {
     Ok(txn
         .prepare_cached(
             r#"
+SELECT cids.cid FROM aliases JOIN cids ON aliases.block_id = cids.id AND aliases.name = ?
+"#,
+        )?
+        .query_row(params![name], |row| row.get(0))
+        .optional()?)
+}
+
+pub(crate) fn reverse_alias(
+    txn: &Transaction,
+    cid: impl ToSql,
+) -> crate::Result<Option<Vec<Vec<u8>>>> {
+    if let Some(id) = get_id(txn, cid)? {
+        Ok(Some(
+            txn.prepare_cached(
+                r#"
 WITH RECURSIVE
     ancestor_of(id) AS
     (
@@ -493,9 +507,14 @@ WITH RECURSIVE
     )
 SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = block_id;
 "#,
-        )?
-        .query_map(params![id], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?)
+            )?
+            .query_map(params![id], |row| row.get(0))?
+            .filter_map(|a| a.transpose())
+            .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?,
+        ))
+    } else {
+        Ok(None)
+    }
 }
 
 /// get all ids corresponding to cids that we have a block for

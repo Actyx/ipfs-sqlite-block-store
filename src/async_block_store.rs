@@ -86,6 +86,11 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.alias(&name, link.as_ref()))
     }
 
+    /// Resolves an alias to a cid.
+    pub fn resolve(&self, name: Vec<u8>) -> AsyncResult<Option<Cid>> {
+        self.unblock(move |store| store.resolve(&name))
+    }
+
     pub fn alias_many(
         &self,
         aliases: impl IntoIterator<Item = (impl AsRef<[u8]>, Option<Cid>)> + Send + 'static,
@@ -155,7 +160,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.get_descendants(&cid))
     }
 
-    pub fn reverse_alias(&self, cid: Cid) -> AsyncResult<Vec<Vec<u8>>> {
+    pub fn reverse_alias(&self, cid: Cid) -> AsyncResult<Option<Vec<Vec<u8>>>> {
         self.unblock(move |store| store.reverse_alias(&cid))
     }
 
