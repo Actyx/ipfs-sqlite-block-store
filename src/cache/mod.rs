@@ -2,7 +2,7 @@ use fnv::{FnvHashMap, FnvHashSet};
 use libipld::Cid;
 use std::{
     fmt::Debug,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -20,28 +20,52 @@ mod tests;
 pub struct BlockInfo {
     /// id of the block in the block store
     id: i64,
-    /// ipld codec, see https://github.com/multiformats/multicodec/blob/master/table.csv
-    codec: u64,
+    /// cid
+    cid: Cid,
     /// size of the block
     len: usize,
 }
 
 impl BlockInfo {
-    pub fn new(id: i64, cid: &Cid, data: &[u8]) -> Self {
-        Self {
-            id,
-            codec: cid.codec(),
-            len: data.len(),
-        }
+    pub fn new(id: i64, cid: &Cid, len: usize) -> Self {
+        Self { id, cid: *cid, len }
     }
     pub fn id(&self) -> i64 {
         self.id
     }
-    pub fn codec(&self) -> u64 {
-        self.codec
+    pub fn cid(&self) -> &Cid {
+        &self.cid
     }
     pub fn block_len(&self) -> usize {
         self.len
+    }
+}
+
+/// Information about a write operation that is cheap to gather
+#[derive(Debug, Clone, Copy)]
+pub struct WriteInfo {
+    block: BlockInfo,
+    block_exists: bool,
+}
+
+impl WriteInfo {
+    pub fn new(block: BlockInfo, block_exists: bool) -> Self {
+        Self {
+            block,
+            block_exists,
+        }
+    }
+    /// true if we had the block already.
+    pub fn block_exists(&self) -> bool {
+        self.block_exists
+    }
+}
+
+impl Deref for WriteInfo {
+    type Target = BlockInfo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.block
     }
 }
 
@@ -58,12 +82,10 @@ pub trait CacheTracker: Debug + Send {
     ///
     /// note that this method will be called frequently, on every block write.
     /// it is fire and forget, so it is perfectly ok to offload the writing to another thread.
+    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {}
 
-    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {}
-    /// notification that these ids no longer have to be tracked
-    ///
-    /// this will be called from inside gc
-    fn delete_ids(&mut self, ids: &[i64]) {}
+    /// called whenever blocks have been deleted by gc.
+    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {}
 
     /// sort ids by importance. More important ids should go to the end.
     ///
@@ -81,7 +103,7 @@ impl CacheTracker for Box<dyn CacheTracker> {
         self.as_mut().blocks_accessed(blocks)
     }
 
-    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {
         self.as_mut().blocks_written(blocks)
     }
 
@@ -89,8 +111,8 @@ impl CacheTracker for Box<dyn CacheTracker> {
         self.as_ref().sort_ids(ids)
     }
 
-    fn delete_ids(&mut self, ids: &[i64]) {
-        self.as_mut().delete_ids(ids)
+    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
+        self.as_mut().blocks_deleted(blocks)
     }
 
     fn retain_ids(&mut self, ids: &[i64]) {
@@ -183,10 +205,10 @@ where
     }
 
     /// notification that these ids no longer have to be tracked
-    fn delete_ids(&mut self, ids: &[i64]) {
+    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
         let mut cache = self.cache.lock().unwrap();
-        for id in ids {
-            cache.remove(id);
+        for block in blocks {
+            cache.remove(&block.id);
         }
     }
 

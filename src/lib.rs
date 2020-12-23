@@ -67,7 +67,7 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
-use cache::{BlockInfo, CacheTracker, NoopCacheTracker};
+use cache::{BlockInfo, CacheTracker, NoopCacheTracker, WriteInfo};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::cid::{self, Cid};
@@ -500,9 +500,9 @@ impl BlockStore {
             );
             result
         };
-        Ok(log_execution_time("gc", Duration::from_secs(1), || {
+        let (deleted, complete) = log_execution_time("gc", Duration::from_secs(1), || {
             let size_targets = self.config.size_targets;
-            let cache_tracker = &mut self.config.cache_tracker;
+            let cache_tracker = &self.config.cache_tracker;
             in_txn(&mut self.conn, move |txn| {
                 // get rid of dropped temp aliases, this should be fast
                 for id in expired_temp_pins {
@@ -516,7 +516,9 @@ impl BlockStore {
                     cache_tracker,
                 )?)
             })
-        })?)
+        })?;
+        self.config.cache_tracker.blocks_deleted(deleted);
+        Ok(complete)
     }
     /// Incrementally delete orphaned blocks
     ///
@@ -576,8 +578,11 @@ impl BlockStore {
                         .iter()
                         .map(CidBytes::try_from)
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-                    let id = put_block(txn, &cid_bytes, &block.data(), links, alias)?;
-                    Ok(BlockInfo::new(id, block.cid(), block.data()))
+                    let res = put_block(txn, &cid_bytes, &block.data(), links, alias)?;
+                    Ok(WriteInfo::new(
+                        BlockInfo::new(res.id, block.cid(), block.data().len()),
+                        res.block_exists,
+                    ))
                 })
                 .collect::<Result<Vec<_>>>()?)
         })?;
@@ -621,7 +626,7 @@ impl BlockStore {
             .iter()
             .filter_map(|(cid, res)| {
                 res.as_ref()
-                    .map(|(id, data)| BlockInfo::new(*id, cid, data))
+                    .map(|(id, data)| BlockInfo::new(*id, cid, data.len()))
             })
             .collect::<Vec<_>>();
         self.config.cache_tracker.blocks_accessed(infos);

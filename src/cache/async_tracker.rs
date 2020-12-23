@@ -1,4 +1,4 @@
-use super::{BlockInfo, CacheTracker};
+use super::{BlockInfo, CacheTracker, WriteInfo};
 use std::{
     fmt::Debug,
     sync::{Arc, Mutex},
@@ -43,15 +43,15 @@ where
         });
     }
 
-    fn blocks_written(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
             inner.lock().unwrap().blocks_written(blocks);
         });
     }
 
-    fn delete_ids(&mut self, ids: &[i64]) {
-        self.inner.lock().unwrap().delete_ids(ids);
+    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
+        self.inner.lock().unwrap().blocks_deleted(blocks);
     }
 
     fn retain_ids(&mut self, ids: &[i64]) {

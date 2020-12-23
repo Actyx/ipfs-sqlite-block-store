@@ -25,7 +25,11 @@ use std::{
 };
 use tracing::*;
 
-use crate::{cache::CacheTracker, SizeTargets, StoreStats};
+use crate::{
+    cache::{BlockInfo, CacheTracker},
+    cidbytes::CidBytes,
+    SizeTargets, StoreStats,
+};
 
 const PRAGMAS: &str = r#"
 -- this must be done before changing the database via the CLI!
@@ -206,13 +210,13 @@ pub(crate) fn incremental_gc(
     min_blocks: usize,
     max_duration: Duration,
     size_targets: SizeTargets,
-    cache_tracker: &mut impl CacheTracker,
-) -> crate::Result<bool> {
+    cache_tracker: &impl CacheTracker,
+) -> crate::Result<(Vec<BlockInfo>, bool)> {
     // get the store stats from the stats table
     let mut stats = get_store_stats(txn)?;
     // if we don't exceed any of the size targets, there is nothing to do
     if !size_targets.exceeded(&stats) {
-        return Ok(true);
+        return Ok((Vec::new(), true));
     }
     // find all ids that have neither a parent nor are aliased
     let mut id_query = txn.prepare_cached(
@@ -241,12 +245,14 @@ WHERE
     })?;
     // give the cache tracker the opportunity to sort the non-pinned ids by value
     cache_tracker.sort_ids(&mut ids);
-    let mut block_size_stmt =
-        txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
+    let mut block_size_stmt = txn.prepare_cached(
+        "SELECT LENGTH(block), cid FROM cids INNER JOIN blocks ON id = block_id AND id = ?;",
+    )?;
     let mut update_stats_stmt =
         txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
     let mut n = 0;
+    let mut deleted = Vec::new();
     for id in ids.iter() {
         if n >= min_blocks && t0.elapsed() > max_duration {
             break;
@@ -255,19 +261,22 @@ WHERE
             break;
         }
         trace!("deleting id {}", id);
-        let block_size: Option<i64> = block_size_stmt
-            .query_row(&[id], |row| row.get(0))
+        let block_size: Option<(i64, CidBytes)> = block_size_stmt
+            .query_row(&[id], |row| Ok((row.get(0)?, row.get(1)?)))
             .optional()?;
-        if let Some(block_size) = block_size {
+        if let Some((block_size, cid)) = block_size {
+            let cid = Cid::try_from(&cid)?;
+            let len: usize = usize::try_from(block_size)?;
             update_stats_stmt.execute(&[block_size])?;
             stats.count -= 1;
             stats.size -= block_size as u64;
+            deleted.push(BlockInfo::new(*id, &cid, len));
         }
         delete_stmt.execute(&[id])?;
         n += 1;
     }
-    cache_tracker.delete_ids(&ids[0..n]);
-    Ok(n == ids.len() || !size_targets.exceeded(&stats))
+    let complete = n == ids.len() || !size_targets.exceeded(&stats);
+    Ok((deleted, complete))
 }
 
 /// deletes the orphaned blocks.
@@ -318,13 +327,20 @@ pub(crate) fn delete_temp_pin(txn: &Transaction, alias: i64) -> rusqlite::Result
     Ok(())
 }
 
+pub(crate) struct PutBlockResult {
+    /// id for the cid
+    pub(crate) id: i64,
+    /// true if the block already existed
+    pub(crate) block_exists: bool,
+}
+
 pub(crate) fn put_block<C: ToSql>(
     txn: &Transaction,
     key: &C,
     data: &[u8],
     links: impl IntoIterator<Item = C>,
     alias: Option<&AtomicI64>,
-) -> crate::Result<i64> {
+) -> crate::Result<PutBlockResult> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
@@ -365,7 +381,7 @@ pub(crate) fn put_block<C: ToSql>(
             insert_ref.execute(params![id, child_id])?;
         }
     }
-    Ok(id)
+    Ok(PutBlockResult { id, block_exists })
 }
 
 /// Get a block

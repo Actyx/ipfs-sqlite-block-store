@@ -150,10 +150,10 @@ where
         });
     }
 
-    fn delete_ids(&mut self, ids: &[i64]) {
+    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
         attempt_txn(&mut self.conn, |txn| {
-            for id in ids {
-                delete_id(txn, *id)?;
+            for block in blocks {
+                delete_id(txn, block.id)?;
             }
             Ok(())
         });
