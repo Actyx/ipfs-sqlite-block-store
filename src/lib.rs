@@ -70,7 +70,11 @@ use crate::cidbytes::CidBytes;
 use cache::{BlockInfo, CacheTracker, NoopCacheTracker, WriteInfo};
 use db::*;
 pub use error::{BlockStoreError, Result};
-use libipld::{Ipld, IpldCodec, cid::{self, Cid}, codec::Codec};
+use libipld::{
+    cid::{self, Cid},
+    codec::Codec,
+    Ipld, IpldCodec,
+};
 use rusqlite::{Connection, DatabaseName};
 use std::{
     convert::TryFrom,
@@ -233,7 +237,10 @@ pub struct OwnedBlock {
 
 impl OwnedBlock {
     pub fn new(cid: Cid, data: impl Into<Box<[u8]>>) -> Self {
-        Self { cid, data: data.into() }
+        Self {
+            cid,
+            data: data.into(),
+        }
     }
 }
 
@@ -252,15 +259,13 @@ struct BorrowedBlock<'a> {
     data: &'a [u8],
 }
 
-impl<'a> BorrowedBlock<'a>
-{
+impl<'a> BorrowedBlock<'a> {
     fn new(cid: Cid, data: &'a [u8]) -> Self {
         Self { cid, data }
     }
 }
 
-impl<'a> Block for BorrowedBlock<'a>
-{
+impl<'a> Block for BorrowedBlock<'a> {
     fn cid(&self) -> &Cid {
         &self.cid
     }
@@ -272,7 +277,8 @@ impl<'a> Block for BorrowedBlock<'a>
 
 fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
     let mut links = Vec::new();
-    IpldCodec::try_from(block.cid().codec())?.references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
+    IpldCodec::try_from(block.cid().codec())?
+        .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
     Ok(links)
 }
 
@@ -315,7 +321,11 @@ impl BlockStore {
             DatabaseName::Main,
             path,
             Some(|p: rusqlite::backup::Progress| {
-                let percent = (p.pagecount - p.remaining) * 100 / p.pagecount;
+                let percent = if p.pagecount == 0 {
+                    100
+                } else {
+                    (p.pagecount - p.remaining) * 100 / p.pagecount
+                };
                 if percent % 10 == 0 {
                     debug!("Restoring: {} %", percent);
                 }
@@ -589,11 +599,7 @@ impl BlockStore {
     /// - `data` a blob
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
-    pub fn put_block(
-        &mut self,
-        block: &impl Block,
-        alias: Option<&TempPin>,
-    ) -> Result<()> {
+    pub fn put_block(&mut self, block: &impl Block, alias: Option<&TempPin>) -> Result<()> {
         let bb = BorrowedBlock::new(*block.cid(), block.data());
         self.put_blocks(Some(bb), alias)?;
         Ok(())

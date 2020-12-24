@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ipfs_sqlite_block_store::{Block, BlockStore, Config, OwnedBlock};
-use libipld::{DagCbor, cbor::DagCborCodec, cid::Cid, codec::Codec};
+use libipld::{cbor::DagCborCodec, cid::Cid, codec::Codec, DagCbor};
 use multihash::{Code, MultihashDigest};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
