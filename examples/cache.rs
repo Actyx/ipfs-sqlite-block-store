@@ -1,31 +1,42 @@
-use ipfs_sqlite_block_store::{
-    cache::{AsyncCacheTracker, Spawner, SqliteCacheTracker},
-    BlockStore, Config, OwnedBlock, SizeTargets,
-};
+use ipfs_sqlite_block_store::{Block, BlockStore, Config, OwnedBlock, SizeTargets, cache::{AsyncCacheTracker, Spawner, SqliteCacheTracker}};
 use itertools::*;
-use libipld::Cid;
+use libipld::{DagCbor, Cid};
 use multihash::{Code, MultihashDigest};
 use std::time::Instant;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
-fn cid(name: &str) -> Cid {
+#[derive(Debug, DagCbor)]
+struct Node {
+    links: Vec<Cid>,
+    text: String,
+}
+
+impl Node {
+    pub fn leaf(text: &str) -> Self {
+        Self {
+            links: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    pub fn branch(text: &str, links: impl IntoIterator<Item = Cid>) -> Self {
+        Self {
+            links: links.into_iter().collect(),
+            text: text.into(),
+        }
+    }
+}
+
+fn cid(name: &str) -> OwnedBlock {
     // https://github.com/multiformats/multicodec/blob/master/table.csv
     let hash = Code::Sha2_256.digest(name.as_bytes());
-    Cid::new_v1(0x71, hash)
+    let cid = Cid::new_v1(0x71, hash);
+    OwnedBlock::new(cid, name.as_bytes().to_vec())
 }
 
-fn unpinned(i: usize) -> Cid {
+fn unpinned(i: usize) -> OwnedBlock {
     cid(&format!("{}", i))
-}
-
-fn data(cid: &Cid, n: usize) -> Vec<u8> {
-    let mut res = vec![0u8; n];
-    let text = cid.to_string();
-    let bytes = text.as_bytes();
-    let len = res.len().min(bytes.len());
-    res[0..len].copy_from_slice(&bytes[0..len]);
-    res
 }
 
 struct TokioSpawner;
@@ -57,11 +68,7 @@ async fn main() -> anyhow::Result<()> {
     for is in &(0..n).chunks(1000) {
         info!("adding 1000 blocks");
         let blocks = is
-            .map(|i| {
-                let cid = unpinned(i);
-                let data = data(&cid, 1000);
-                OwnedBlock::new(cid, data, vec![])
-            })
+            .map(|i| unpinned(i))
             .collect::<Vec<_>>();
         store.put_blocks(blocks, None)?;
     }
@@ -72,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         info!("Accessing all blocks, round {}", j);
         for i in 0..n {
             sum += store
-                .get_block(&unpinned(i))?
+                .get_block(unpinned(i).cid())?
                 .map(|x| x.len())
                 .unwrap_or_default();
             count += 1;

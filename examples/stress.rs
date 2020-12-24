@@ -1,13 +1,39 @@
 use std::time::Instant;
 
 use ipfs_sqlite_block_store::{Block, BlockStore, Config, OwnedBlock};
-use libipld::cid::Cid;
+use libipld::{DagCbor, cbor::DagCborCodec, cid::Cid, codec::Codec};
 use multihash::{Code, MultihashDigest};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
-fn cid(name: &str) -> Cid {
-    let hash = Code::Sha2_256.digest(name.as_bytes());
-    Cid::new_v1(0x71, hash)
+#[derive(Debug, DagCbor)]
+struct Node {
+    links: Vec<Cid>,
+    text: String,
+}
+
+impl Node {
+    pub fn leaf(text: &str) -> Self {
+        Self {
+            links: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    pub fn branch(text: &str, links: impl IntoIterator<Item = Cid>) -> Self {
+        Self {
+            links: links.into_iter().collect(),
+            text: text.into(),
+        }
+    }
+}
+
+/// creates a simple leaf block
+fn cid(name: &str) -> OwnedBlock {
+    let ipld = Node::leaf(name);
+    let bytes = DagCborCodec.encode(&ipld).unwrap();
+    let hash = Code::Sha2_256.digest(&bytes);
+    // https://github.com/multiformats/multicodec/blob/master/table.csv
+    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
 }
 
 fn fmt_cid(cid: Cid) -> String {
@@ -38,7 +64,7 @@ fn build_tree_0(
         }
         children
     };
-    let block = OwnedBlock::new(node, data, children);
+    let block = node;
     let cid = *block.cid();
     blocks.push(block);
     Ok(cid)
@@ -59,9 +85,8 @@ fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<OwnedBlock>)>
     for i in 0..n {
         let node = mk_node(i);
         let data = mk_data(i);
-        let links = prev.iter().copied().collect::<Vec<Cid>>();
-        blocks.push(OwnedBlock::new(node, data, links));
-        prev = Some(node);
+        prev = Some(*node.cid());
+        blocks.push(node);
     }
     Ok((prev.unwrap(), blocks))
 }
@@ -89,21 +114,21 @@ fn main() -> anyhow::Result<()> {
         tree_root,
         store.get_descendants::<Vec<_>>(&tree_root)?.len(),
     );
-    store.put_block(&cid("a"), b"adata", vec![cid("b"), cid("c")], None)?;
+    store.put_block(&cid("a"), None)?;
     println!(
         "{:?}",
-        fmt_cids(store.get_missing_blocks::<Vec<_>>(&cid("a"))?)
+        fmt_cids(store.get_missing_blocks::<Vec<_>>(cid("a").cid())?)
     );
-    store.put_block(&cid("b"), b"bdata", vec![], None)?;
-    store.put_block(&cid("c"), b"cdata", vec![], None)?;
+    store.put_block(&cid("b"), None)?;
+    store.put_block(&cid("c"), None)?;
     println!(
         "{:?}",
-        fmt_cids(store.get_descendants::<Vec<_>>(&cid("a"))?)
+        fmt_cids(store.get_descendants::<Vec<_>>(cid("a").cid())?)
     );
-    store.put_block(&cid("d"), b"ddata", vec![cid("b"), cid("c")], None)?;
+    store.put_block(&cid("d"), None)?;
 
-    store.alias(b"source1", Some(&cid("a")))?;
-    store.alias(b"source2", Some(&cid("d")))?;
+    store.alias(b"source1", Some(cid("a").cid()))?;
+    store.alias(b"source2", Some(cid("d").cid()))?;
     println!("starting gc");
     let t0 = Instant::now();
     store.gc()?;

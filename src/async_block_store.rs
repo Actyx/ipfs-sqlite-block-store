@@ -130,7 +130,8 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.get_blocks(cids))
     }
 
-    pub fn has_block(&self, cid: Cid) -> AsyncResult<bool> {
+    pub fn has_block(&self, cid: &Cid) -> AsyncResult<bool> {
+        let cid = *cid;
         self.unblock(move |store| store.has_block(&cid))
     }
 
@@ -189,15 +190,13 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
 
     pub fn put_block(
         &self,
-        cid: Cid,
-        data: Vec<u8>,
-        links: Vec<Cid>,
+        block: impl Block + Send + 'static,
         alias: Option<&AsyncTempPin>,
     ) -> AsyncResult<()> {
         let alias = alias.cloned();
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());
-            store.put_block(&cid, data.as_ref(), links, alias)
+            store.put_block(&block, alias)
         })
     }
 
