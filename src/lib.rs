@@ -73,6 +73,7 @@ pub use error::{BlockStoreError, Result};
 use libipld::{
     cid::{self, Cid},
     codec::Codec,
+    store::StoreParams,
     Ipld, IpldCodec,
 };
 use rusqlite::{Connection, DatabaseName};
@@ -226,6 +227,16 @@ impl Drop for TempPin {
 pub trait Block {
     fn cid(&self) -> &Cid;
     fn data(&self) -> &[u8];
+}
+
+impl<S: StoreParams> Block for libipld::Block<S> {
+    fn cid(&self) -> &Cid {
+        libipld::Block::cid(&self)
+    }
+
+    fn data(&self) -> &[u8] {
+        libipld::Block::data(&self)
+    }
 }
 
 /// Block that owns its data
