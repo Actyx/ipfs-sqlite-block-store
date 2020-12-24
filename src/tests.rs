@@ -1,12 +1,22 @@
 #![allow(clippy::many_single_char_names)]
-use crate::{Block, BlockStore, Config, OwnedBlock, SizeTargets, async_block_store::{AsyncBlockStore, GcConfig, RuntimeAdapter}, cache::CacheTracker, cache::InMemCacheTracker, cache::{BlockInfo, SortByIdCacheTracker, SqliteCacheTracker, WriteInfo}};
+use crate::{
+    async_block_store::{AsyncBlockStore, GcConfig, RuntimeAdapter},
+    cache::CacheTracker,
+    cache::InMemCacheTracker,
+    cache::{BlockInfo, SortByIdCacheTracker, SqliteCacheTracker, WriteInfo},
+    Block, BlockStore, Config, OwnedBlock, SizeTargets,
+};
 use fnv::FnvHashSet;
 use futures::{channel::mpsc::UnboundedSender, prelude::*};
-use libipld::{cbor::DagCborCodec, cid::Cid, multihash::{Code, MultihashDigest}};
+use libipld::{
+    cbor::DagCborCodec,
+    cid::Cid,
+    multihash::{Code, MultihashDigest},
+};
+use libipld::{prelude::*, DagCbor};
 use rusqlite::{params, Connection};
 use std::time::Duration;
 use tempdir::TempDir;
-use libipld::{DagCbor, prelude::*};
 
 #[derive(Debug, DagCbor)]
 struct Node {
@@ -112,9 +122,15 @@ fn insert_get() -> anyhow::Result<()> {
     // check the data
     assert_eq!(store.get_block(a.cid())?, Some(a.data().to_vec()));
     // check descendants
-    assert_eq!(store.get_descendants::<Vec<_>>(a.cid())?, vec![*a.cid(), *b.cid(), *c.cid()]);
+    assert_eq!(
+        store.get_descendants::<Vec<_>>(a.cid())?,
+        vec![*a.cid(), *b.cid(), *c.cid()]
+    );
     // check missing blocks - should be b and c
-    assert_eq!(store.get_missing_blocks::<Vec<_>>(a.cid())?, vec![*b.cid(), *c.cid()]);
+    assert_eq!(
+        store.get_missing_blocks::<Vec<_>>(a.cid())?,
+        vec![*b.cid(), *c.cid()]
+    );
     // alias the root
     store.alias(b"alias1", Some(a.cid()))?;
     store.gc()?;
@@ -157,9 +173,15 @@ fn incremental_insert() -> anyhow::Result<()> {
     // check the data
     assert_eq!(store.get_block(a.cid())?, Some(a.data().to_vec()));
     // check descendants
-    assert_eq!(store.get_descendants::<Vec<_>>(a.cid())?, vec![*a.cid(), *b.cid(), *c.cid(), *d.cid(), *e.cid()]);
+    assert_eq!(
+        store.get_descendants::<Vec<_>>(a.cid())?,
+        vec![*a.cid(), *b.cid(), *c.cid(), *d.cid(), *e.cid()]
+    );
     // check missing blocks - should be b and c
-    assert_eq!(store.get_missing_blocks::<Vec<_>>(a.cid())?, vec![*b.cid(), *d.cid(), *e.cid()]);
+    assert_eq!(
+        store.get_missing_blocks::<Vec<_>>(a.cid())?,
+        vec![*b.cid(), *d.cid(), *e.cid()]
+    );
     // alias the root
     store.alias(b"alias1", Some(a.cid()))?;
     store.gc()?;
@@ -343,7 +365,10 @@ fn test_reverse_alias() -> anyhow::Result<()> {
     store.put_block(&block, None)?;
     assert_eq!(store.reverse_alias(block.cid())?, Some(vec![]));
     store.alias(&b"leaf"[..], Some(block.cid()))?;
-    assert_eq!(store.reverse_alias(block.cid())?, Some(vec![b"leaf".to_vec()]));
+    assert_eq!(
+        store.reverse_alias(block.cid())?,
+        Some(vec![b"leaf".to_vec()])
+    );
     let block2 = links("1", vec![&block]); // needs link to cid
     store.put_block(&block2, None)?;
     store.alias(&b"root"[..], Some(block2.cid()))?;
@@ -402,15 +427,11 @@ async fn temp_pin_async() -> anyhow::Result<()> {
     let b = block("b");
     let alias = store.temp_pin().await?;
 
-    store
-        .put_block(a.clone(), Some(&alias))
-        .await?;
+    store.put_block(a.clone(), Some(&alias)).await?;
     store.gc().await?;
     assert!(store.has_block(a.cid()).await?);
 
-    store
-        .put_block(b.clone(), Some(&alias))
-        .await?;
+    store.put_block(b.clone(), Some(&alias)).await?;
     store.gc().await?;
     assert!(store.has_block(b.cid()).await?);
 
@@ -442,9 +463,7 @@ async fn gc_loop() -> anyhow::Result<()> {
     let a = block("a");
     let b = block("b");
     let alias = store.temp_pin().await?;
-    store
-        .put_block(a.clone(), Some(&alias))
-        .await?;
+    store.put_block(a.clone(), Some(&alias)).await?;
     store.put_block(b.clone(), None).await?;
     // give GC opportunity to run
     tokio::time::sleep(Duration::from_millis(250)).await;
