@@ -1,31 +1,45 @@
 use ipfs_sqlite_block_store::{
     cache::{AsyncCacheTracker, Spawner, SqliteCacheTracker},
-    BlockStore, Config, OwnedBlock, SizeTargets,
+    Block, BlockStore, Config, OwnedBlock, SizeTargets,
 };
 use itertools::*;
-use libipld::Cid;
+use libipld::{cbor::DagCborCodec, codec::Codec, Cid, DagCbor};
 use multihash::{Code, MultihashDigest};
 use std::time::Instant;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
-fn cid(name: &str) -> Cid {
+#[derive(Debug, DagCbor)]
+struct Node {
+    links: Vec<Cid>,
+    text: String,
+}
+
+impl Node {
+    pub fn leaf(text: &str) -> Self {
+        Self {
+            links: Vec::new(),
+            text: text.into(),
+        }
+    }
+}
+
+/// creates a block with a min size
+fn sized(name: &str, min_size: usize) -> OwnedBlock {
+    let mut text = name.to_string();
+    while text.len() < min_size {
+        text += " ";
+    }
+    let ipld = Node::leaf(&text);
+    let bytes = DagCborCodec.encode(&ipld).unwrap();
+    let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    let hash = Code::Sha2_256.digest(name.as_bytes());
-    Cid::new_v1(0x71, hash)
+    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
 }
 
-fn unpinned(i: usize) -> Cid {
-    cid(&format!("{}", i))
-}
-
-fn data(cid: &Cid, n: usize) -> Vec<u8> {
-    let mut res = vec![0u8; n];
-    let text = cid.to_string();
-    let bytes = text.as_bytes();
-    let len = res.len().min(bytes.len());
-    res[0..len].copy_from_slice(&bytes[0..len]);
-    res
+/// creates a block with the name "unpinned-<i>" and a size of 1000
+fn unpinned(i: usize) -> OwnedBlock {
+    sized(&format!("{}", i), 10000 - 16)
 }
 
 struct TokioSpawner;
@@ -54,15 +68,13 @@ async fn main() -> anyhow::Result<()> {
             .with_cache_tracker(tracker),
     )?;
     let n = 100000;
+    let mut cids = Vec::new();
     for is in &(0..n).chunks(1000) {
         info!("adding 1000 blocks");
-        let blocks = is
-            .map(|i| {
-                let cid = unpinned(i);
-                let data = data(&cid, 1000);
-                OwnedBlock::new(cid, data, vec![])
-            })
-            .collect::<Vec<_>>();
+        let blocks = is.map(|i| unpinned(i)).collect::<Vec<_>>();
+        for block in &blocks {
+            cids.push(*block.cid());
+        }
         store.put_blocks(blocks, None)?;
     }
     let mut sum = 0usize;
@@ -70,11 +82,8 @@ async fn main() -> anyhow::Result<()> {
     let t0 = Instant::now();
     for j in 0..2 {
         info!("Accessing all blocks, round {}", j);
-        for i in 0..n {
-            sum += store
-                .get_block(&unpinned(i))?
-                .map(|x| x.len())
-                .unwrap_or_default();
+        for cid in &cids {
+            sum += store.get_block(cid)?.map(|x| x.len()).unwrap_or_default();
             count += 1;
         }
     }

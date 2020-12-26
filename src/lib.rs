@@ -67,10 +67,15 @@ mod error;
 mod tests;
 
 use crate::cidbytes::CidBytes;
-use cache::{BlockInfo, CacheTracker, NoopCacheTracker};
+use cache::{BlockInfo, CacheTracker, NoopCacheTracker, WriteInfo};
 use db::*;
 pub use error::{BlockStoreError, Result};
-use libipld::cid::{self, Cid};
+use libipld::{
+    cid::{self, Cid},
+    codec::Codec,
+    store::StoreParams,
+    Ipld, IpldCodec,
+};
 use rusqlite::{Connection, DatabaseName};
 use std::{
     convert::TryFrom,
@@ -222,19 +227,31 @@ impl Drop for TempPin {
 pub trait Block {
     fn cid(&self) -> &Cid;
     fn data(&self) -> &[u8];
-    fn links(&self) -> anyhow::Result<Vec<Cid>>;
+}
+
+impl<S: StoreParams> Block for libipld::Block<S> {
+    fn cid(&self) -> &Cid {
+        libipld::Block::cid(&self)
+    }
+
+    fn data(&self) -> &[u8] {
+        libipld::Block::data(&self)
+    }
 }
 
 /// Block that owns its data
+#[derive(Debug, Clone)]
 pub struct OwnedBlock {
     cid: Cid,
-    data: Vec<u8>,
-    links: Vec<Cid>,
+    data: Box<[u8]>,
 }
 
 impl OwnedBlock {
-    pub fn new(cid: Cid, data: Vec<u8>, links: Vec<Cid>) -> Self {
-        Self { cid, data, links }
+    pub fn new(cid: Cid, data: impl Into<Box<[u8]>>) -> Self {
+        Self {
+            cid,
+            data: data.into(),
+        }
     }
 }
 
@@ -246,31 +263,20 @@ impl Block for OwnedBlock {
     fn data(&self) -> &[u8] {
         &self.data
     }
-
-    fn links(&self) -> anyhow::Result<Vec<Cid>> {
-        Ok(self.links.clone())
-    }
 }
 
-struct BorrowedBlock<'a, F> {
+struct BorrowedBlock<'a> {
     cid: Cid,
     data: &'a [u8],
-    links: F,
 }
 
-impl<'a, F> BorrowedBlock<'a, F>
-where
-    F: Fn() -> anyhow::Result<Vec<Cid>>,
-{
-    fn new(cid: Cid, data: &'a [u8], links: F) -> Self {
-        Self { cid, data, links }
+impl<'a> BorrowedBlock<'a> {
+    fn new(cid: Cid, data: &'a [u8]) -> Self {
+        Self { cid, data }
     }
 }
 
-impl<'a, F> Block for BorrowedBlock<'a, F>
-where
-    F: Fn() -> anyhow::Result<Vec<Cid>>,
-{
+impl<'a> Block for BorrowedBlock<'a> {
     fn cid(&self) -> &Cid {
         &self.cid
     }
@@ -278,10 +284,13 @@ where
     fn data(&self) -> &[u8] {
         self.data
     }
+}
 
-    fn links(&self) -> anyhow::Result<Vec<Cid>> {
-        (self.links)()
-    }
+fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
+    let mut links = Vec::new();
+    IpldCodec::try_from(block.cid().codec())?
+        .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
+    Ok(links)
 }
 
 impl BlockStore {
@@ -323,7 +332,11 @@ impl BlockStore {
             DatabaseName::Main,
             path,
             Some(|p: rusqlite::backup::Progress| {
-                let percent = (p.pagecount - p.remaining) * 100 / p.pagecount;
+                let percent = if p.pagecount == 0 {
+                    100
+                } else {
+                    (p.pagecount - p.remaining) * 100 / p.pagecount
+                };
                 if percent % 10 == 0 {
                     debug!("Restoring: {} %", percent);
                 }
@@ -500,9 +513,9 @@ impl BlockStore {
             );
             result
         };
-        Ok(log_execution_time("gc", Duration::from_secs(1), || {
+        let (deleted, complete) = log_execution_time("gc", Duration::from_secs(1), || {
             let size_targets = self.config.size_targets;
-            let cache_tracker = &mut self.config.cache_tracker;
+            let cache_tracker = &self.config.cache_tracker;
             in_txn(&mut self.conn, move |txn| {
                 // get rid of dropped temp aliases, this should be fast
                 for id in expired_temp_pins {
@@ -516,7 +529,9 @@ impl BlockStore {
                     cache_tracker,
                 )?)
             })
-        })?)
+        })?;
+        self.config.cache_tracker.blocks_deleted(deleted);
+        Ok(complete)
     }
     /// Incrementally delete orphaned blocks
     ///
@@ -571,13 +586,15 @@ impl BlockStore {
                 .into_iter()
                 .map(|block| {
                     let cid_bytes = CidBytes::try_from(block.cid())?;
-                    let links = block
-                        .links()?
+                    let links = links(&block)?
                         .iter()
                         .map(CidBytes::try_from)
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-                    let id = put_block(txn, &cid_bytes, &block.data(), links, alias)?;
-                    Ok(BlockInfo::new(id, block.cid(), block.data()))
+                    let res = put_block(txn, &cid_bytes, &block.data(), links, alias)?;
+                    Ok(WriteInfo::new(
+                        BlockInfo::new(res.id, block.cid(), block.data().len()),
+                        res.block_exists,
+                    ))
                 })
                 .collect::<Result<Vec<_>>>()?)
         })?;
@@ -593,18 +610,9 @@ impl BlockStore {
     /// - `data` a blob
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
-    pub fn put_block<I>(
-        &mut self,
-        cid: &Cid,
-        data: &[u8],
-        links: I,
-        alias: Option<&TempPin>,
-    ) -> Result<()>
-    where
-        I: IntoIterator<Item = Cid> + Clone,
-    {
-        let block = BorrowedBlock::new(*cid, data, move || Ok(links.clone().into_iter().collect()));
-        self.put_blocks(Some(block), alias)?;
+    pub fn put_block(&mut self, block: &impl Block, alias: Option<&TempPin>) -> Result<()> {
+        let bb = BorrowedBlock::new(*block.cid(), block.data());
+        self.put_blocks(Some(bb), alias)?;
         Ok(())
     }
     /// Get multiple blocks in a single read transaction
@@ -621,7 +629,7 @@ impl BlockStore {
             .iter()
             .filter_map(|(cid, res)| {
                 res.as_ref()
-                    .map(|(id, data)| BlockInfo::new(*id, cid, data))
+                    .map(|(id, data)| BlockInfo::new(*id, cid, data.len()))
             })
             .collect::<Vec<_>>();
         self.config.cache_tracker.blocks_accessed(infos);

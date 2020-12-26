@@ -1,5 +1,4 @@
 use crate::{Block, BlockStore, StoreStats, TempPin};
-use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 use libipld::Cid;
@@ -12,28 +11,8 @@ use tracing::*;
 
 #[derive(Clone)]
 pub struct AsyncBlockStore<R> {
-    inner: Option<Arc<Mutex<Inner>>>,
+    inner: Arc<Mutex<BlockStore>>,
     runtime: R,
-}
-
-struct Inner {
-    store: BlockStore,
-    complete: oneshot::Sender<()>,
-}
-
-impl<R> Drop for AsyncBlockStore<R> {
-    fn drop(&mut self) {
-        // try to take the inner. If we can't take it, this is a double drop.
-        if let Some(inner) = self.inner.take() {
-            // we were the last holders of the arc
-            if let Ok(inner) = Arc::try_unwrap(inner) {
-                // try to unwrap the mutex
-                if let Ok(inner) = inner.into_inner() {
-                    let _ = inner.complete.send(());
-                }
-            }
-        }
-    }
 }
 
 impl AsyncTempPin {
@@ -67,15 +46,11 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
     /// `store` The BlockStore to wrap
     ///
     /// returns the async store and a future that completes when the store is dropped.
-    pub fn new(runtime: R, store: BlockStore) -> (Self, BoxFuture<'static, ()>) {
-        let (complete, receiver) = oneshot::channel();
-        (
-            Self {
-                runtime,
-                inner: Some(Arc::new(Mutex::new(Inner { store, complete }))),
-            },
-            receiver.map(|_| ()).boxed(),
-        )
+    pub fn new(runtime: R, store: BlockStore) -> Self {
+        Self {
+            runtime,
+            inner: Arc::new(Mutex::new(store)),
+        }
     }
 
     pub fn temp_pin(&self) -> AsyncResult<AsyncTempPin> {
@@ -115,7 +90,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         &self,
         min_blocks: usize,
         max_duration: Duration,
-    ) -> BoxFuture<'static, crate::Result<bool>> {
+    ) -> AsyncResult<bool> {
         self.unblock(move |store| store.incremental_delete_orphaned(min_blocks, max_duration))
     }
 
@@ -130,7 +105,8 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.get_blocks(cids))
     }
 
-    pub fn has_block(&self, cid: Cid) -> AsyncResult<bool> {
+    pub fn has_block(&self, cid: &Cid) -> AsyncResult<bool> {
+        let cid = *cid;
         self.unblock(move |store| store.has_block(&cid))
     }
 
@@ -189,15 +165,13 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
 
     pub fn put_block(
         &self,
-        cid: Cid,
-        data: Vec<u8>,
-        links: Vec<Cid>,
+        block: impl Block + Send + 'static,
         alias: Option<&AsyncTempPin>,
     ) -> AsyncResult<()> {
         let alias = alias.cloned();
         self.unblock(move |store| {
             let alias = alias.as_ref().map(|x| x.0.as_ref());
-            store.put_block(&cid, data.as_ref(), links, alias)
+            store.put_block(&block, alias)
         })
     }
 
@@ -229,26 +203,20 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         &self,
         f: impl FnOnce(&mut BlockStore) -> crate::Result<T> + Send + 'static,
     ) -> AsyncResult<T> {
-        if let Some(inner) = self.inner.clone() {
-            let runtime = self.runtime.clone();
-            runtime
-                .unblock(move || f(&mut inner.lock().unwrap().store))
-                .err_into()
-                .map(|x| x.and_then(|x| x))
-                .boxed()
-        } else {
-            unreachable!()
-        }
+        let runtime = self.runtime.clone();
+        let inner = self.inner.clone();
+        runtime
+            .unblock(move || f(&mut inner.lock().unwrap()))
+            .err_into()
+            .map(|x| x.and_then(|x| x))
+            .boxed()
     }
 }
 
 impl<R> AsyncBlockStore<R> {
     /// number of references to this async wrapper
     pub fn ref_count(&self) -> usize {
-        self.inner
-            .as_ref()
-            .map(|a| Arc::strong_count(a))
-            .unwrap_or_default()
+        Arc::strong_count(&self.inner)
     }
 }
 

@@ -3,23 +3,89 @@ use crate::{
     async_block_store::{AsyncBlockStore, GcConfig, RuntimeAdapter},
     cache::CacheTracker,
     cache::InMemCacheTracker,
-    cache::{SortByIdCacheTracker, SqliteCacheTracker},
-    BlockStore, Config, SizeTargets,
+    cache::{BlockInfo, SortByIdCacheTracker, SqliteCacheTracker, WriteInfo},
+    Block, BlockStore, Config, OwnedBlock, SizeTargets,
 };
 use fnv::FnvHashSet;
-use futures::prelude::*;
+use futures::{channel::mpsc::UnboundedSender, prelude::*};
 use libipld::{
+    cbor::DagCborCodec,
     cid::Cid,
     multihash::{Code, MultihashDigest},
 };
+use libipld::{prelude::*, DagCbor};
 use rusqlite::{params, Connection};
 use std::time::Duration;
 use tempdir::TempDir;
 
-fn cid(name: &str) -> Cid {
+#[derive(Debug, DagCbor)]
+struct Node {
+    links: Vec<Cid>,
+    text: String,
+}
+
+impl Node {
+    pub fn leaf(text: &str) -> Self {
+        Self {
+            links: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    pub fn branch(text: &str, links: impl IntoIterator<Item = Cid>) -> Self {
+        Self {
+            links: links.into_iter().collect(),
+            text: text.into(),
+        }
+    }
+}
+
+enum SizeOrLinks {
+    Size(usize),
+    Links(Vec<Cid>),
+}
+
+impl From<Vec<Cid>> for SizeOrLinks {
+    fn from(value: Vec<Cid>) -> Self {
+        Self::Links(value)
+    }
+}
+
+impl From<usize> for SizeOrLinks {
+    fn from(value: usize) -> Self {
+        Self::Size(value)
+    }
+}
+
+/// creates a simple leaf block
+fn block(name: &str) -> OwnedBlock {
+    let ipld = Node::leaf(name);
+    let bytes = DagCborCodec.encode(&ipld).unwrap();
+    let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    let hash = Code::Sha2_256.digest(name.as_bytes());
-    Cid::new_v1(0x71, hash)
+    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+}
+
+/// creates a block with some links
+fn links(name: &str, children: Vec<&OwnedBlock>) -> OwnedBlock {
+    let ipld = Node::branch(name, children.iter().map(|b| *b.cid()).collect::<Vec<_>>());
+    let bytes = DagCborCodec.encode(&ipld).unwrap();
+    let hash = Code::Sha2_256.digest(&bytes);
+    // https://github.com/multiformats/multicodec/blob/master/table.csv
+    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+}
+
+/// creates a block with a min size
+fn sized(name: &str, min_size: usize) -> OwnedBlock {
+    let mut text = name.to_string();
+    while text.len() < min_size {
+        text += " ";
+    }
+    let ipld = Node::leaf(&text);
+    let bytes = DagCborCodec.encode(&ipld).unwrap();
+    let hash = Code::Sha2_256.digest(&bytes);
+    // https://github.com/multiformats/multicodec/blob/master/table.csv
+    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
 }
 
 /*fn pb(name: &str) -> Cid {
@@ -28,98 +94,103 @@ fn cid(name: &str) -> Cid {
     Cid::new_v1(0x70, hash)
 }*/
 
-fn unpinned(i: usize) -> Cid {
-    cid(&format!("{}", i))
+/// creates a block with the name "unpinned-<i>" and a size of 1000
+fn unpinned(i: usize) -> OwnedBlock {
+    sized(&format!("{}", i), 1000 - 16)
 }
 
-fn pinned(i: usize) -> Cid {
-    cid(&format!("pinned-{}", i))
-}
-
-fn data(cid: &Cid, n: usize) -> Vec<u8> {
-    let mut res = vec![0u8; n];
-    let text = cid.to_string();
-    let bytes = text.as_bytes();
-    let len = res.len().min(bytes.len());
-    res[0..len].copy_from_slice(&bytes[0..len]);
-    res
+/// creates a block with the name "pinned-<i>" and a size of 1000
+fn pinned(i: usize) -> OwnedBlock {
+    sized(&format!("pinned-{}", i), 1000 - 16)
 }
 
 #[test]
 fn insert_get() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
-    let a = cid("a");
-    let b = cid("b");
-    let c = cid("c");
-    store.put_block(&a, b"abcd", vec![b, c], None)?;
+    let b = block("b");
+    let c = block("c");
+    let a = links("a", vec![&b, &c]);
+    store.put_block(&a, None)?;
     // we should have all three cids
-    assert!(store.has_cid(&a)?);
-    assert!(store.has_cid(&b)?);
-    assert!(store.has_cid(&c)?);
+    assert!(store.has_cid(a.cid())?);
+    assert!(store.has_cid(b.cid())?);
+    assert!(store.has_cid(c.cid())?);
     // but only the first block
-    assert!(store.has_block(&a)?);
-    assert!(!store.has_block(&b)?);
-    assert!(!store.has_block(&c)?);
+    assert!(store.has_block(a.cid())?);
+    assert!(!store.has_block(b.cid())?);
+    assert!(!store.has_block(c.cid())?);
     // check the data
-    assert_eq!(store.get_block(&a)?, Some(b"abcd".to_vec()));
+    assert_eq!(store.get_block(a.cid())?, Some(a.data().to_vec()));
     // check descendants
-    assert_eq!(store.get_descendants::<Vec<_>>(&a)?, vec![a, b, c]);
+    assert_eq!(
+        store.get_descendants::<Vec<_>>(a.cid())?,
+        vec![*a.cid(), *b.cid(), *c.cid()]
+    );
     // check missing blocks - should be b and c
-    assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, c]);
+    assert_eq!(
+        store.get_missing_blocks::<Vec<_>>(a.cid())?,
+        vec![*b.cid(), *c.cid()]
+    );
     // alias the root
-    store.alias(b"alias1", Some(&a))?;
+    store.alias(b"alias1", Some(a.cid()))?;
     store.gc()?;
     // after gc, we shold still have the block
-    assert!(store.has_block(&a)?);
+    assert!(store.has_block(a.cid())?);
     store.alias(b"alias1", None)?;
     store.gc()?;
     // after gc, we shold no longer have the block
-    assert!(!store.has_block(&a)?);
+    assert!(!store.has_block(a.cid())?);
     Ok(())
 }
 
 #[test]
 fn incremental_insert() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
-    let a = cid("a");
-    let b = cid("b");
-    let c = cid("c");
-    let d = cid("d");
-    let e = cid("e");
+    let b = block("b");
+    let d = block("d");
+    let e = block("e");
+    let c = links("c", vec![&d, &e]);
+    let a = links("a", vec![&b, &c]);
     // alias before even adding the block
-    store.alias(b"alias1", Some(&a))?;
-    assert!(store.has_cid(&a)?);
-    store.put_block(&a, b"abcd", vec![b, c], None)?;
+    store.alias(b"alias1", Some(a.cid()))?;
+    assert!(store.has_cid(a.cid())?);
+    store.put_block(&a, None)?;
     store.gc()?;
-    store.put_block(&c, b"fubar", vec![d, e], None)?;
+    store.put_block(&c, None)?;
     store.gc()?;
     // we should have all five cids
-    assert!(store.has_cid(&a)?);
-    assert!(store.has_cid(&b)?);
-    assert!(store.has_cid(&c)?);
-    assert!(store.has_cid(&d)?);
-    assert!(store.has_cid(&e)?);
+    assert!(store.has_cid(a.cid())?);
+    assert!(store.has_cid(b.cid())?);
+    assert!(store.has_cid(c.cid())?);
+    assert!(store.has_cid(d.cid())?);
+    assert!(store.has_cid(e.cid())?);
     // but only blocks a and c
-    assert!(store.has_block(&a)?);
-    assert!(!store.has_block(&b)?);
-    assert!(store.has_block(&c)?);
-    assert!(!store.has_block(&d)?);
-    assert!(!store.has_block(&e)?);
+    assert!(store.has_block(a.cid())?);
+    assert!(!store.has_block(b.cid())?);
+    assert!(store.has_block(c.cid())?);
+    assert!(!store.has_block(d.cid())?);
+    assert!(!store.has_block(e.cid())?);
     // check the data
-    assert_eq!(store.get_block(&a)?, Some(b"abcd".to_vec()));
+    assert_eq!(store.get_block(a.cid())?, Some(a.data().to_vec()));
     // check descendants
-    assert_eq!(store.get_descendants::<Vec<_>>(&a)?, vec![a, b, c, d, e]);
+    assert_eq!(
+        store.get_descendants::<Vec<_>>(a.cid())?,
+        vec![*a.cid(), *b.cid(), *c.cid(), *d.cid(), *e.cid()]
+    );
     // check missing blocks - should be b and c
-    assert_eq!(store.get_missing_blocks::<Vec<_>>(&a)?, vec![b, d, e]);
+    assert_eq!(
+        store.get_missing_blocks::<Vec<_>>(a.cid())?,
+        vec![*b.cid(), *d.cid(), *e.cid()]
+    );
     // alias the root
-    store.alias(b"alias1", Some(&a))?;
+    store.alias(b"alias1", Some(a.cid()))?;
     store.gc()?;
     // after gc, we shold still have the block
-    assert!(store.has_block(&a)?);
-    store.alias(b"alias1", Some(&c))?;
+    assert!(store.has_block(a.cid())?);
+    store.alias(b"alias1", Some(c.cid()))?;
     store.gc()?;
-    assert!(!store.has_block(&a)?);
-    assert!(store.has_block(&c)?);
+    assert!(!store.has_block(a.cid())?);
+    assert!(store.has_block(c.cid())?);
     Ok(())
 }
 
@@ -134,17 +205,15 @@ fn size_targets() -> anyhow::Result<()> {
 
     // add some pinned stuff at the very beginning
     for i in 0..2 {
-        let cid = pinned(i);
-        let data = data(&cid, 1000);
-        store.put_block(&cid, &data, vec![], None)?;
-        store.alias(cid.to_bytes(), Some(&cid))?;
+        let block = pinned(i);
+        store.put_block(&block, None)?;
+        store.alias(block.cid().to_bytes(), Some(&block.cid()))?;
     }
 
     // add data that is within the size targets
     for i in 0..8 {
-        let cid = unpinned(i);
-        let data = data(&cid, 1000);
-        store.put_block(&cid, &data, vec![], None)?;
+        let block = unpinned(i);
+        store.put_block(&block, None)?;
     }
 
     // check that gc does nothing
@@ -156,9 +225,8 @@ fn size_targets() -> anyhow::Result<()> {
 
     // add some more stuff to exceed the size targets
     for i in 8..13 {
-        let cid = cid(&format!("{}", i));
-        let data = data(&cid, 1000);
-        store.put_block(&cid, &data, vec![], None)?;
+        let block = unpinned(i);
+        store.put_block(&block, None)?;
     }
 
     // check that gc gets triggered and removes min_blocks
@@ -172,6 +240,7 @@ fn size_targets() -> anyhow::Result<()> {
     let expected_cids = (0..2)
         .map(pinned)
         .chain((5..13).map(unpinned))
+        .map(|block| *block.cid())
         .collect::<FnvHashSet<_>>();
     assert_eq!(cids, expected_cids);
     Ok(())
@@ -199,17 +268,15 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
 
     // add some pinned stuff at the very beginning
     for i in 0..2 {
-        let cid = pinned(i);
-        let data = data(&cid, 1000);
-        store.put_block(&cid, &data, vec![], None)?;
-        store.alias(cid.to_bytes(), Some(&cid))?;
+        let block = pinned(i);
+        store.put_block(&block, None)?;
+        store.alias(block.cid().to_bytes(), Some(block.cid()))?;
     }
 
     // add data that is within the size targets
     for i in 0..8 {
-        let cid = unpinned(i);
-        let data = data(&cid, 1000);
-        store.put_block(&cid, &data, vec![], None)?;
+        let block = unpinned(i);
+        store.put_block(&block, None)?;
     }
 
     // check that gc does nothing
@@ -221,15 +288,14 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
 
     // add some more stuff to exceed the size targets
     for i in 8..13 {
-        let cid = cid(&format!("{}", i));
-        let data = data(&cid, 1000);
-        store.put_block(&cid, &data, vec![], None)?;
+        let block = unpinned(i);
+        store.put_block(&block, None)?;
     }
 
     // access one of the existing unpinned blocks to move it to the front
     assert_eq!(
-        store.get_block(&unpinned(0))?,
-        Some(data(&unpinned(0), 1000))
+        store.get_block(&unpinned(0).cid())?,
+        Some(unpinned(0).data().to_vec())
     );
 
     // check that gc gets triggered and removes min_blocks
@@ -244,6 +310,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
         .map(pinned)
         .chain(Some(unpinned(0)))
         .chain((6..13).map(unpinned))
+        .map(|block| *block.cid())
         .collect::<FnvHashSet<_>>();
     assert_eq!(cids, expected_cids);
     Ok(())
@@ -282,30 +349,31 @@ fn test_migration() -> anyhow::Result<()> {
 #[test]
 fn test_resolve() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
-    let cid = pinned(0);
-    let data = data(&cid, 1);
-    store.put_block(&cid, &data, vec![], None)?;
-    store.alias(&b"leaf"[..], Some(&cid))?;
+    let block = pinned(0);
+    store.put_block(&block, None)?;
+    store.alias(&b"leaf"[..], Some(block.cid()))?;
     let cid2 = store.resolve(&b"leaf"[..])?;
-    assert_eq!(Some(cid), cid2);
+    assert_eq!(Some(*block.cid()), cid2);
     Ok(())
 }
 
 #[test]
 fn test_reverse_alias() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
-    let cid = pinned(0);
-    let data = data(&cid, 1);
-    assert_eq!(store.reverse_alias(&cid)?, None);
-    store.put_block(&cid, &data, vec![], None)?;
-    assert_eq!(store.reverse_alias(&cid)?, Some(vec![]));
-    store.alias(&b"leaf"[..], Some(&cid))?;
-    assert_eq!(store.reverse_alias(&cid)?, Some(vec![b"leaf".to_vec()]));
-    let cid2 = pinned(1);
-    store.put_block(&cid2, &data, vec![cid], None)?;
-    store.alias(&b"root"[..], Some(&cid2))?;
+    let block = pinned(0);
+    assert_eq!(store.reverse_alias(block.cid())?, None);
+    store.put_block(&block, None)?;
+    assert_eq!(store.reverse_alias(block.cid())?, Some(vec![]));
+    store.alias(&b"leaf"[..], Some(block.cid()))?;
     assert_eq!(
-        store.reverse_alias(&cid)?,
+        store.reverse_alias(block.cid())?,
+        Some(vec![b"leaf".to_vec()])
+    );
+    let block2 = links("1", vec![&block]); // needs link to cid
+    store.put_block(&block2, None)?;
+    store.alias(&b"root"[..], Some(block2.cid()))?;
+    assert_eq!(
+        store.reverse_alias(block.cid())?,
         Some(vec![b"leaf".to_vec(), b"root".to_vec()])
     );
     Ok(())
@@ -331,22 +399,22 @@ impl RuntimeAdapter for TokioRuntime {
 #[test]
 fn temp_pin() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
-    let a = cid("a");
-    let b = cid("b");
+    let a = block("a");
+    let b = block("b");
     let alias = store.temp_pin();
 
-    store.put_block(&a, b"abcd", vec![], Some(&alias))?;
+    store.put_block(&a, Some(&alias))?;
     store.gc()?;
-    assert!(store.has_block(&a)?);
+    assert!(store.has_block(a.cid())?);
 
-    store.put_block(&b, b"fubar", vec![], Some(&alias))?;
+    store.put_block(&b, Some(&alias))?;
     store.gc()?;
-    assert!(store.has_block(&b)?);
+    assert!(store.has_block(b.cid())?);
 
     drop(alias);
     store.gc()?;
-    assert!(!store.has_block(&a)?);
-    assert!(!store.has_block(&b)?);
+    assert!(!store.has_block(a.cid())?);
+    assert!(!store.has_block(b.cid())?);
 
     Ok(())
 }
@@ -354,31 +422,23 @@ fn temp_pin() -> anyhow::Result<()> {
 #[tokio::test]
 async fn temp_pin_async() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
-    let (store, completed) = AsyncBlockStore::new(TokioRuntime, store);
-    let a = cid("a");
-    let b = cid("b");
+    let store = AsyncBlockStore::new(TokioRuntime, store);
+    let a = block("a");
+    let b = block("b");
     let alias = store.temp_pin().await?;
 
-    store
-        .put_block(a, b"abcd".to_vec(), vec![], Some(&alias))
-        .await?;
+    store.put_block(a.clone(), Some(&alias)).await?;
     store.gc().await?;
-    assert!(store.has_block(a).await?);
+    assert!(store.has_block(a.cid()).await?);
 
-    store
-        .put_block(b, b"fubar".to_vec(), vec![], Some(&alias))
-        .await?;
+    store.put_block(b.clone(), Some(&alias)).await?;
     store.gc().await?;
-    assert!(store.has_block(b).await?);
+    assert!(store.has_block(b.cid()).await?);
 
     drop(alias);
     store.gc().await?;
-    assert!(!store.has_block(a).await?);
-    assert!(!store.has_block(b).await?);
-
-    // test that completed is fired once the last store is dropped
-    drop(store);
-    completed.await;
+    assert!(!store.has_block(a.cid()).await?);
+    assert!(!store.has_block(b.cid()).await?);
 
     Ok(())
 }
@@ -386,7 +446,7 @@ async fn temp_pin_async() -> anyhow::Result<()> {
 #[tokio::test]
 async fn gc_loop() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
-    let (store, _completed) = AsyncBlockStore::new(TokioRuntime, store);
+    let store = AsyncBlockStore::new(TokioRuntime, store);
     // let gc run in the background
     let gc_loop = store.clone().gc_loop(GcConfig {
         interval: Duration::from_millis(100),
@@ -396,21 +456,19 @@ async fn gc_loop() -> anyhow::Result<()> {
     let handle = tokio::spawn(gc_loop);
 
     // add 2 blocks, one temp aliased, one not
-    let a = cid("a");
-    let b = cid("b");
+    let a = block("a");
+    let b = block("b");
     let alias = store.temp_pin().await?;
-    store
-        .put_block(a, b"fubar".to_vec(), vec![], Some(&alias))
-        .await?;
-    store.put_block(b, b"fubar".to_vec(), vec![], None).await?;
+    store.put_block(a.clone(), Some(&alias)).await?;
+    store.put_block(b.clone(), None).await?;
     // give GC opportunity to run
     tokio::time::sleep(Duration::from_millis(250)).await;
-    assert!(store.has_block(a).await?);
-    assert!(!store.has_block(b).await?);
+    assert!(store.has_block(a.cid()).await?);
+    assert!(!store.has_block(b.cid()).await?);
     drop(alias);
     // give GC opportunity to run
     tokio::time::sleep(Duration::from_millis(250)).await;
-    assert!(!store.has_block(a).await?);
+    assert!(!store.has_block(a.cid()).await?);
     handle.abort();
     Ok(())
 }
@@ -423,4 +481,75 @@ fn broken_db() -> anyhow::Result<()> {
     let store = BlockStore::open("test-data/broken.sqlite", Config::default())?;
     assert!(store.integrity_check().is_err());
     Ok(())
+}
+
+#[derive(Debug)]
+struct Tap<T> {
+    inner: T,
+    subscriptions: Vec<UnboundedSender<StorageEvent>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StorageEvent {
+    Insert(Cid),
+    Remove(Cid),
+}
+
+impl<T: CacheTracker> Tap<T> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            subscriptions: Default::default(),
+        }
+    }
+
+    pub fn subscribe(&mut self) -> impl Stream<Item = StorageEvent> + Send + Unpin {
+        let (sender, receiver) = futures::channel::mpsc::unbounded();
+        self.subscriptions.push(sender);
+        receiver
+    }
+
+    fn publish(&mut self, events: impl Iterator<Item = StorageEvent>) {
+        for event in events {
+            self.publish_one(event);
+        }
+    }
+
+    fn publish_one(&mut self, event: StorageEvent) {
+        self.subscriptions
+            .retain(|subscription| subscription.unbounded_send(event.clone()).is_ok())
+    }
+}
+
+impl<T: CacheTracker> CacheTracker for Tap<T> {
+    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
+        self.inner.blocks_accessed(blocks);
+    }
+
+    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {
+        self.publish(
+            blocks
+                .iter()
+                .filter(|block| !block.block_exists())
+                .map(|block| StorageEvent::Insert(*block.cid())),
+        );
+        self.inner.blocks_written(blocks);
+    }
+
+    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
+        self.publish(
+            blocks
+                .iter()
+                .map(|block| StorageEvent::Remove(*block.cid())),
+        );
+        self.inner.blocks_deleted(blocks);
+    }
+
+    fn sort_ids(&self, ids: &mut [i64]) {
+        self.inner.sort_ids(ids);
+    }
+
+    fn retain_ids(&mut self, ids: &[i64]) {
+        self.inner.retain_ids(ids);
+    }
 }

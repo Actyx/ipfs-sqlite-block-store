@@ -40,12 +40,6 @@ impl ipfs_sqlite_block_store::Block for IpldBlock {
     fn data(&self) -> &[u8] {
         self.0.data()
     }
-
-    fn links(&self) -> anyhow::Result<Vec<Cid>> {
-        let mut links = Vec::new();
-        self.0.references(&mut links)?;
-        Ok(links)
-    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -86,10 +80,8 @@ fn main() -> anyhow::Result<()> {
             assert_eq!(key.hash(), cid.hash());
             //println!("{} {} {}", cid, block.pinned, block.data.len());
             let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
-            let mut refs = Vec::new();
-            block.references(&mut refs)?;
             let (cid, data) = block.into_inner();
-            Ok(OwnedBlock::new(cid, data, refs))
+            Ok(OwnedBlock::new(cid, data))
         })
     });
 
