@@ -422,7 +422,7 @@ fn temp_pin() -> anyhow::Result<()> {
 #[tokio::test]
 async fn temp_pin_async() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
-    let (store, completed) = AsyncBlockStore::new(TokioRuntime, store);
+    let store = AsyncBlockStore::new(TokioRuntime, store);
     let a = block("a");
     let b = block("b");
     let alias = store.temp_pin().await?;
@@ -440,17 +440,13 @@ async fn temp_pin_async() -> anyhow::Result<()> {
     assert!(!store.has_block(a.cid()).await?);
     assert!(!store.has_block(b.cid()).await?);
 
-    // test that completed is fired once the last store is dropped
-    drop(store);
-    completed.await;
-
     Ok(())
 }
 
 #[tokio::test]
 async fn gc_loop() -> anyhow::Result<()> {
     let store = BlockStore::memory(Config::default())?;
-    let (store, _completed) = AsyncBlockStore::new(TokioRuntime, store);
+    let store = AsyncBlockStore::new(TokioRuntime, store);
     // let gc run in the background
     let gc_loop = store.clone().gc_loop(GcConfig {
         interval: Duration::from_millis(100),
