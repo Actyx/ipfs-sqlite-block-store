@@ -147,7 +147,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.has_cid(&cid))
     }
 
-    pub async fn get_missing_blocks<C: FromIterator<Cid> + Send + 'static>(
+    pub fn get_missing_blocks<C: FromIterator<Cid> + Send + 'static>(
         &self,
         cid: Cid,
     ) -> AsyncResult<C> {
