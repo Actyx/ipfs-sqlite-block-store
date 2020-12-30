@@ -404,13 +404,16 @@ impl BlockStore {
         pin: &TempPin,
         links: impl IntoIterator<Item = Cid>,
     ) -> crate::Result<()> {
-        in_txn(&mut self.conn, |txn| {
+        let pin0 = pin.id.load(Ordering::SeqCst);
+        let pin0 = in_txn(&mut self.conn, |txn| {
             let links = links
                 .into_iter()
                 .map(|x| CidBytes::try_from(&x))
                 .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-            assign_temp_pin(txn, &pin.id, links)
-        })
+            assign_temp_pin(txn, pin0, links)
+        })?;
+        pin.id.store(pin0, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Returns the aliases referencing a block.
@@ -592,10 +595,10 @@ impl BlockStore {
     pub fn put_blocks<B: Block>(
         &mut self,
         blocks: impl IntoIterator<Item = B>,
-        alias: Option<&TempPin>,
+        pin: Option<&TempPin>,
     ) -> Result<()> {
+        let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let infos = in_txn(&mut self.conn, |txn| {
-            let alias = alias.map(|alias| &alias.id);
             Ok(blocks
                 .into_iter()
                 .map(|block| {
@@ -604,7 +607,7 @@ impl BlockStore {
                         .iter()
                         .map(CidBytes::try_from)
                         .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-                    let res = put_block(txn, &cid_bytes, &block.data(), links, alias)?;
+                    let res = put_block(txn, &cid_bytes, &block.data(), links, &mut pin0)?;
                     Ok(WriteInfo::new(
                         BlockInfo::new(res.id, block.cid(), block.data().len()),
                         res.block_exists,
@@ -612,6 +615,9 @@ impl BlockStore {
                 })
                 .collect::<Result<Vec<_>>>()?)
         })?;
+        if let (Some(pin), Some(p)) = (pin, pin0) {
+            pin.id.store(p, Ordering::SeqCst);
+        }
         self.config.cache_tracker.blocks_written(infos);
         Ok(())
     }

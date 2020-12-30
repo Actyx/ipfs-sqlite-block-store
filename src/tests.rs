@@ -15,7 +15,10 @@ use libipld::{
 };
 use libipld::{prelude::*, DagCbor};
 use rusqlite::{params, Connection};
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tempdir::TempDir;
 
 #[derive(Debug, DagCbor)]
@@ -516,7 +519,9 @@ impl<T: CacheTracker> Tap<T> {
     }
 
     fn publish_one(&self, event: StorageEvent) {
-        self.subscriptions.lock().unwrap()
+        self.subscriptions
+            .lock()
+            .unwrap()
             .retain(|subscription| subscription.unbounded_send(event.clone()).is_ok())
     }
 }

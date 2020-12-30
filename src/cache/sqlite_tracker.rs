@@ -1,7 +1,13 @@
 use super::{BlockInfo, CacheTracker};
 use fnv::{FnvHashMap, FnvHashSet};
-use rusqlite::{Connection, NO_PARAMS, Transaction};
-use std::{fmt::Debug, ops::{Deref, DerefMut}, path::Path, sync::{Arc, Mutex}, time::{Instant, SystemTime}};
+use rusqlite::{Connection, Transaction, NO_PARAMS};
+use std::{
+    fmt::Debug,
+    ops::{Deref, DerefMut},
+    path::Path,
+    sync::{Arc, Mutex},
+    time::{Instant, SystemTime},
+};
 use tracing::*;
 
 /// A cache tracker that uses a sqlite database as persistent storage
@@ -30,14 +36,20 @@ fn init_db(conn: &mut Connection) -> crate::Result<()> {
     Ok(())
 }
 
-fn attempt_txn<T>(mut conn: impl DerefMut<Target=Connection>, f: impl FnOnce(&Transaction) -> crate::Result<T>) {
+fn attempt_txn<T>(
+    mut conn: impl DerefMut<Target = Connection>,
+    f: impl FnOnce(&Transaction) -> crate::Result<T>,
+) {
     let result = crate::in_txn(&mut conn, f);
     if let Err(cause) = result {
         tracing::warn!("Unable to execute transaction {}", cause);
     }
 }
 
-fn attempt_ro_txn<T>(conn: impl Deref<Target=Connection>, f: impl FnOnce(&Transaction) -> crate::Result<T>) {
+fn attempt_ro_txn<T>(
+    conn: impl Deref<Target = Connection>,
+    f: impl FnOnce(&Transaction) -> crate::Result<T>,
+) {
     let result = crate::in_ro_txn(&conn, f);
     if let Err(cause) = result {
         tracing::warn!("Unable to execute readonly transaction {}", cause);
