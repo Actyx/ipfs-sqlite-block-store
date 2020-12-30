@@ -306,7 +306,7 @@ impl BlockStore {
     }
 
     /// Create a persistent block store with the given config
-    pub fn open(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
         init_db(&mut conn, false)?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
@@ -322,7 +322,7 @@ impl BlockStore {
     ///
     /// This will create a writeable in-memory database that is initialized with the content
     /// of the file at the given path.
-    pub fn open_test(path: impl AsRef<Path>, mut config: Config) -> crate::Result<Self> {
+    pub fn open_test(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         debug!(
             "Restoring in memory database from {}",
@@ -377,8 +377,8 @@ impl BlockStore {
     }
 
     /// Resolves an alias to a cid.
-    pub fn resolve(&mut self, name: impl AsRef<[u8]>) -> crate::Result<Option<Cid>> {
-        in_txn(&mut self.conn, |txn| {
+    pub fn resolve(&self, name: impl AsRef<[u8]>) -> crate::Result<Option<Cid>> {
+        in_ro_txn(&self.conn, |txn| {
             Ok(resolve::<CidBytes>(txn, name.as_ref())?
                 .map(|c| Cid::try_from(&c))
                 .transpose()?)
@@ -399,10 +399,24 @@ impl BlockStore {
         })
     }
 
+    pub fn assign_temp_pin(
+        &mut self,
+        pin: &TempPin,
+        links: impl IntoIterator<Item = Cid>,
+    ) -> crate::Result<()> {
+        in_txn(&mut self.conn, |txn| {
+            let links = links
+                .into_iter()
+                .map(|x| CidBytes::try_from(&x))
+                .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
+            assign_temp_pin(txn, &pin.id, links)
+        })
+    }
+
     /// Returns the aliases referencing a block.
-    pub fn reverse_alias(&mut self, cid: &Cid) -> crate::Result<Option<Vec<Vec<u8>>>> {
+    pub fn reverse_alias(&self, cid: &Cid) -> crate::Result<Option<Vec<Vec<u8>>>> {
         let cid = CidBytes::try_from(cid)?;
-        in_txn(&mut self.conn, |txn| reverse_alias(txn, cid.as_ref()))
+        in_ro_txn(&self.conn, |txn| reverse_alias(txn, cid.as_ref()))
     }
 
     /// Checks if the store knows about the cid.
@@ -448,14 +462,14 @@ impl BlockStore {
     }
 
     /// Get all cids for which the store has blocks
-    pub fn get_block_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
+    pub fn get_block_cids<C: FromIterator<Cid>>(&self) -> Result<C> {
         let res = in_ro_txn(&self.conn, |txn| Ok(get_block_cids::<CidBytes>(txn)?))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
     /// Get descendants of a cid
-    pub fn get_descendants<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
+    pub fn get_descendants<C: FromIterator<Cid>>(&self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let res = in_ro_txn(&self.conn, move |txn| get_descendants(txn, cid))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
@@ -463,7 +477,7 @@ impl BlockStore {
     }
 
     /// Given a root of a dag, gives all cids which we do not have data for.
-    pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
+    pub fn get_missing_blocks<C: FromIterator<Cid>>(&self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
         let result = log_execution_time("get_missing_blocks", Duration::from_millis(10), || {
             in_ro_txn(&self.conn, move |txn| get_missing_blocks(txn, cid))
@@ -616,7 +630,7 @@ impl BlockStore {
         Ok(())
     }
     /// Get multiple blocks in a single read transaction
-    pub fn get_blocks<I>(&mut self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
+    pub fn get_blocks<I>(&self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
     where
         I: IntoIterator<Item = Cid>,
     {
@@ -640,7 +654,7 @@ impl BlockStore {
     /// Get data for a block
     ///
     /// Will return None if we don't have the data
-    pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
+    pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         Ok(self.get_blocks(std::iter::once(*cid))?.next().unwrap().1)
     }
 }

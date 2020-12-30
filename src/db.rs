@@ -321,9 +321,28 @@ pub(crate) fn incremental_delete_orphaned(
     Ok(n == ids.len())
 }
 
-pub(crate) fn delete_temp_pin(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
+pub(crate) fn delete_temp_pin(txn: &Transaction, pin: i64) -> rusqlite::Result<()> {
     txn.prepare_cached("DELETE FROM temp_pins WHERE id = ?")?
-        .execute(&[alias])?;
+        .execute(&[pin])?;
+    Ok(())
+}
+
+pub(crate) fn assign_temp_pin(
+    txn: &Transaction,
+    pin: &AtomicI64,
+    links: Vec<impl ToSql>,
+) -> crate::Result<()> {
+    delete_temp_pin(txn, pin.load(Ordering::SeqCst))?;
+    if links.is_empty() {
+        // reset the pin to the original state. Next time we get a new id.
+        pin.store(0, Ordering::SeqCst);
+    } else {
+        // we can reuse the id
+        for link in links {
+            let id = get_or_create_id(txn, link)?;
+            add_temp_pin(txn, id, pin)?;
+        }
+    }
     Ok(())
 }
 
@@ -332,6 +351,24 @@ pub(crate) struct PutBlockResult {
     pub(crate) id: i64,
     /// true if the block already existed
     pub(crate) block_exists: bool,
+}
+
+pub(crate) fn add_temp_pin(txn: &Transaction, id: i64, pin: &AtomicI64) -> crate::Result<()> {
+    let pin_id = pin.load(Ordering::SeqCst);
+    if pin_id > 0 {
+        txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")?
+            .execute(&[pin_id, id])?;
+    } else {
+        // since we are not using an autoincrement column, this will reuse ids.
+        // I think this is safe, but is it really? deserves some thought.
+        let pin_id: i64 = txn
+            .prepare_cached("SELECT COALESCE(MAX(id), 1) + 1 FROM temp_pins")?
+            .query_row(NO_PARAMS, |row| row.get(0))?;
+        txn.prepare_cached("INSERT INTO temp_pins (id, block_id) VALUES (?, ?)")?
+            .execute(&[pin_id, id])?;
+        pin.store(pin_id, Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 pub(crate) fn put_block<C: ToSql>(
@@ -349,20 +386,7 @@ pub(crate) fn put_block<C: ToSql>(
         .is_some();
     // create a temporary alias for the block, even if it already exists
     if let Some(alias) = alias {
-        let alias_id = alias.load(Ordering::SeqCst);
-        if alias_id > 0 {
-            txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")?
-                .execute(&[alias_id, id])?;
-        } else {
-            // since we are not using an autoincrement column, this will reuse ids.
-            // I think this is safe, but is it really? deserves some thought.
-            let alias_id: i64 = txn
-                .prepare_cached("SELECT COALESCE(MAX(id), 1) + 1 FROM temp_pins")?
-                .query_row(NO_PARAMS, |row| row.get(0))?;
-            txn.prepare_cached("INSERT INTO temp_pins (id, block_id) VALUES (?, ?)")?
-                .execute(&[alias_id, id])?;
-            alias.store(alias_id, Ordering::SeqCst);
-        }
+        add_temp_pin(txn, id, alias)?;
     }
     if !block_exists {
         // add the block itself

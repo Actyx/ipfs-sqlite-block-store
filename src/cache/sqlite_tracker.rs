@@ -1,16 +1,12 @@
 use super::{BlockInfo, CacheTracker};
 use fnv::{FnvHashMap, FnvHashSet};
-use rusqlite::{Connection, Transaction, NO_PARAMS};
-use std::{
-    fmt::Debug,
-    path::Path,
-    time::{Instant, SystemTime},
-};
+use rusqlite::{Connection, NO_PARAMS, Transaction};
+use std::{fmt::Debug, ops::{Deref, DerefMut}, path::Path, sync::{Arc, Mutex}, time::{Instant, SystemTime}};
 use tracing::*;
 
 /// A cache tracker that uses a sqlite database as persistent storage
 pub struct SqliteCacheTracker<F> {
-    conn: Connection,
+    conn: Arc<Mutex<Connection>>,
     mk_cache_entry: F,
 }
 
@@ -34,15 +30,15 @@ fn init_db(conn: &mut Connection) -> crate::Result<()> {
     Ok(())
 }
 
-fn attempt_txn<T>(conn: &mut Connection, f: impl FnOnce(&Transaction) -> crate::Result<T>) {
-    let result = crate::in_txn(conn, f);
+fn attempt_txn<T>(mut conn: impl DerefMut<Target=Connection>, f: impl FnOnce(&Transaction) -> crate::Result<T>) {
+    let result = crate::in_txn(&mut conn, f);
     if let Err(cause) = result {
         tracing::warn!("Unable to execute transaction {}", cause);
     }
 }
 
-fn attempt_ro_txn<T>(conn: &Connection, f: impl FnOnce(&Transaction) -> crate::Result<T>) {
-    let result = crate::in_ro_txn(conn, f);
+fn attempt_ro_txn<T>(conn: impl Deref<Target=Connection>, f: impl FnOnce(&Transaction) -> crate::Result<T>) {
+    let result = crate::in_ro_txn(&conn, f);
     if let Err(cause) = result {
         tracing::warn!("Unable to execute readonly transaction {}", cause);
     }
@@ -98,7 +94,7 @@ where
         let mut conn = Connection::open_in_memory()?;
         init_db(&mut conn)?;
         Ok(Self {
-            conn,
+            conn: Arc::new(Mutex::new(conn)),
             mk_cache_entry,
         })
     }
@@ -107,7 +103,7 @@ where
         let mut conn = Connection::open(path)?;
         init_db(&mut conn)?;
         Ok(Self {
-            conn,
+            conn: Arc::new(Mutex::new(conn)),
             mk_cache_entry,
         })
     }
@@ -130,7 +126,7 @@ where
     F: Fn(i64, BlockInfo) -> Option<i64> + Send,
 {
     #[allow(clippy::needless_collect)]
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         let accessed = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default();
@@ -142,7 +138,7 @@ where
         if items.is_empty() {
             return;
         }
-        attempt_txn(&mut self.conn, |txn| {
+        attempt_txn(self.conn.lock().unwrap(), |txn| {
             for (id, accessed) in items {
                 set_accessed(txn, id, accessed as i64)?;
             }
@@ -150,8 +146,8 @@ where
         });
     }
 
-    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
-        attempt_txn(&mut self.conn, |txn| {
+    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
+        attempt_txn(self.conn.lock().unwrap(), |txn| {
             for block in blocks {
                 delete_id(txn, block.id)?;
             }
@@ -159,9 +155,9 @@ where
         });
     }
 
-    fn retain_ids(&mut self, ids: &[i64]) {
+    fn retain_ids(&self, ids: &[i64]) {
         let ids = ids.iter().cloned().collect::<FnvHashSet<i64>>();
-        attempt_txn(&mut self.conn, move |txn| {
+        attempt_txn(self.conn.lock().unwrap(), move |txn| {
             for id in get_ids(txn)? {
                 if !&ids.contains(&id) {
                     delete_id(txn, id)?;
@@ -172,7 +168,7 @@ where
     }
 
     fn sort_ids(&self, ids: &mut [i64]) {
-        attempt_ro_txn(&self.conn, |txn| {
+        attempt_ro_txn(self.conn.lock().unwrap(), |txn| {
             let t0 = Instant::now();
             let mut accessed = ids
                 .iter()
