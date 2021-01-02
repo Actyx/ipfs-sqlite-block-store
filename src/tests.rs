@@ -15,7 +15,10 @@ use libipld::{
 };
 use libipld::{prelude::*, DagCbor};
 use rusqlite::{params, Connection};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tempdir::TempDir;
 
 #[derive(Debug, DagCbor)]
@@ -339,7 +342,7 @@ fn test_migration() -> anyhow::Result<()> {
             .execute(params![cid.to_string(), cid.to_bytes(), data])?;
         blocks.push((cid, data));
     }
-    let mut store = BlockStore::open(path, Config::default())?;
+    let store = BlockStore::open(path, Config::default())?;
     for (cid, data) in blocks {
         assert_eq!(store.get_block(&cid)?, Some(data));
     }
@@ -486,7 +489,7 @@ fn broken_db() -> anyhow::Result<()> {
 #[derive(Debug)]
 struct Tap<T> {
     inner: T,
-    subscriptions: Vec<UnboundedSender<StorageEvent>>,
+    subscriptions: Arc<Mutex<Vec<UnboundedSender<StorageEvent>>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -499,34 +502,36 @@ impl<T: CacheTracker> Tap<T> {
     pub fn new(inner: T) -> Self {
         Self {
             inner,
-            subscriptions: Default::default(),
+            subscriptions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn subscribe(&mut self) -> impl Stream<Item = StorageEvent> + Send + Unpin {
+    pub fn subscribe(&self) -> impl Stream<Item = StorageEvent> + Send + Unpin {
         let (sender, receiver) = futures::channel::mpsc::unbounded();
-        self.subscriptions.push(sender);
+        self.subscriptions.lock().unwrap().push(sender);
         receiver
     }
 
-    fn publish(&mut self, events: impl Iterator<Item = StorageEvent>) {
+    fn publish(&self, events: impl Iterator<Item = StorageEvent>) {
         for event in events {
             self.publish_one(event);
         }
     }
 
-    fn publish_one(&mut self, event: StorageEvent) {
+    fn publish_one(&self, event: StorageEvent) {
         self.subscriptions
+            .lock()
+            .unwrap()
             .retain(|subscription| subscription.unbounded_send(event.clone()).is_ok())
     }
 }
 
 impl<T: CacheTracker> CacheTracker for Tap<T> {
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         self.inner.blocks_accessed(blocks);
     }
 
-    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {
+    fn blocks_written(&self, blocks: Vec<WriteInfo>) {
         self.publish(
             blocks
                 .iter()
@@ -536,7 +541,7 @@ impl<T: CacheTracker> CacheTracker for Tap<T> {
         self.inner.blocks_written(blocks);
     }
 
-    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
         self.publish(
             blocks
                 .iter()
@@ -549,7 +554,7 @@ impl<T: CacheTracker> CacheTracker for Tap<T> {
         self.inner.sort_ids(ids);
     }
 
-    fn retain_ids(&mut self, ids: &[i64]) {
+    fn retain_ids(&self, ids: &[i64]) {
         self.inner.retain_ids(ids);
     }
 }

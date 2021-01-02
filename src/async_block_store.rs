@@ -61,6 +61,14 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.alias(&name, link.as_ref()))
     }
 
+    pub fn assign_temp_pin(
+        &self,
+        pin: AsyncTempPin,
+        links: impl IntoIterator<Item = Cid> + Send + 'static,
+    ) -> AsyncResult<()> {
+        self.unblock(move |store| store.assign_temp_pin(&pin.0, links))
+    }
+
     /// Resolves an alias to a cid.
     pub fn resolve(&self, name: Vec<u8>) -> AsyncResult<Option<Cid>> {
         self.unblock(move |store| store.resolve(&name))
