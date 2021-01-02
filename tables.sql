@@ -209,3 +209,30 @@ SELECT id FROM
 WHERE
     id NOT IN (SELECT id FROM descendant_of) AND
     (SELECT atime FROM atime WHERE atime.block_id = id) < 1000000;
+
+
+EXPLAIN QUERY PLAN WITH RECURSIVE
+    -- find descendants of cid, including the id of the cid itself
+    descendant_of(id) AS (
+        SELECT 11111
+        UNION ALL
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of ON descendant_of.id=refs.parent_id
+    ),
+    -- find orphaned ids
+    orphaned_ids as (
+      SELECT DISTINCT id FROM descendant_of LEFT JOIN blocks ON descendant_of.id = blocks.block_id WHERE blocks.block_id IS NULL
+    )
+    -- retrieve corresponding cids - this is a set because of select distinct
+SELECT cid from cids JOIN orphaned_ids ON cids.id = orphaned_ids.id;
+
+EXPLAIN QUERY PLAN WITH RECURSIVE
+    descendant_of(id) AS
+    (
+        SELECT 11111
+        UNION ALL
+        SELECT DISTINCT child_id FROM refs JOIN descendant_of ON descendant_of.id=refs.parent_id
+    ),
+    descendant_ids as (
+        SELECT DISTINCT id FROM descendant_of
+    )
+    SELECT * FROM descendant_ids;

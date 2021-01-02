@@ -104,9 +104,13 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let (tree_root, tree_blocks) = build_tree("test-tree", 10, 4)?;
-    let (_list_root, list_blocks) = build_chain("chain", 10000)?;
+    let (list_root, list_blocks) = build_chain("chain", 10000)?;
     store.put_blocks(tree_blocks, None)?;
     store.put_blocks(list_blocks, None)?;
+    let t0 = Instant::now();
+    store.get_missing_blocks::<Vec<_>>(&list_root)?;
+    store.alias("list-alias-1".as_bytes(), Some(&list_root))?;
+    println!("get_missing_blocks {}", t0.elapsed().as_secs_f64());
     println!(
         "descendants of {:?} {}",
         tree_root,
