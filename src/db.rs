@@ -33,6 +33,8 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
 -- I tried different even larger values for this. Did not make a difference.
 PRAGMA page_size = 4096;
+-- Total cache size 32 megabytes
+PRAGMA cache_size = 8192;
 "#;
 
 const INIT: &str = r#"
