@@ -76,16 +76,16 @@ pub trait CacheTracker: Debug + Send {
     ///
     /// note that this method will be called very frequently, on every block access.
     /// it is fire and forget, so it is perfectly ok to offload the writing to another thread.
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {}
+    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {}
 
     /// called whenever blocks were written
     ///
     /// note that this method will be called frequently, on every block write.
     /// it is fire and forget, so it is perfectly ok to offload the writing to another thread.
-    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {}
+    fn blocks_written(&self, blocks: Vec<WriteInfo>) {}
 
     /// called whenever blocks have been deleted by gc.
-    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {}
+    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {}
 
     /// sort ids by importance. More important ids should go to the end.
     ///
@@ -95,28 +95,28 @@ pub trait CacheTracker: Debug + Send {
     /// notification that only these ids should be retained
     ///
     /// this will be called once during startup
-    fn retain_ids(&mut self, ids: &[i64]) {}
+    fn retain_ids(&self, ids: &[i64]) {}
 }
 
 impl CacheTracker for Box<dyn CacheTracker> {
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
-        self.as_mut().blocks_accessed(blocks)
+    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
+        self.as_ref().blocks_accessed(blocks)
     }
 
-    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {
-        self.as_mut().blocks_written(blocks)
+    fn blocks_written(&self, blocks: Vec<WriteInfo>) {
+        self.as_ref().blocks_written(blocks)
     }
 
     fn sort_ids(&self, ids: &mut [i64]) {
         self.as_ref().sort_ids(ids)
     }
 
-    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
-        self.as_mut().blocks_deleted(blocks)
+    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
+        self.as_ref().blocks_deleted(blocks)
     }
 
-    fn retain_ids(&mut self, ids: &[i64]) {
-        self.as_mut().retain_ids(ids)
+    fn retain_ids(&self, ids: &[i64]) {
+        self.as_ref().retain_ids(ids)
     }
 }
 
@@ -192,7 +192,7 @@ where
     F: Fn(Duration, BlockInfo) -> Option<T> + Send,
 {
     /// called whenever blocks were accessed
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         let now = Instant::now().checked_duration_since(self.created).unwrap();
         let mut cache = self.cache.lock().unwrap();
         for block in blocks {
@@ -205,7 +205,7 @@ where
     }
 
     /// notification that these ids no longer have to be tracked
-    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
         let mut cache = self.cache.lock().unwrap();
         for block in blocks {
             cache.remove(&block.id);
@@ -213,7 +213,7 @@ where
     }
 
     /// notification that only these ids should be retained
-    fn retain_ids(&mut self, ids: &[i64]) {
+    fn retain_ids(&self, ids: &[i64]) {
         let ids = ids.iter().cloned().collect::<FnvHashSet<_>>();
         let mut cache = self.cache.lock().unwrap();
         cache.retain(|id, _| ids.contains(id));

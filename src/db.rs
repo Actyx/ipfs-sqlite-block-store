@@ -16,13 +16,7 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
     NO_PARAMS,
 };
-use std::{
-    collections::BTreeSet,
-    convert::TryFrom,
-    sync::atomic::{AtomicI64, Ordering},
-    time::Duration,
-    time::Instant,
-};
+use std::{collections::BTreeSet, convert::TryFrom, time::Duration, time::Instant};
 use tracing::*;
 
 use crate::{
@@ -39,6 +33,8 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
 -- I tried different even larger values for this. Did not make a difference.
 PRAGMA page_size = 4096;
+-- Total cache size 32 megabytes
+PRAGMA cache_size = 8192;
 "#;
 
 const INIT: &str = r#"
@@ -146,6 +142,7 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
         let block = libipld::Block::<DefaultParams>::new(cid, data)?;
         let mut set = BTreeSet::new();
         block.references(&mut set)?;
+        let mut pin = None;
         put_block(
             &txn,
             &block.cid().to_bytes(),
@@ -153,7 +150,7 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
             set.into_iter()
                 .map(|cid| cid.to_bytes())
                 .collect::<Vec<_>>(),
-            None,
+            &mut pin,
         )?;
     }
     info!("dropping table blocks_v0");
@@ -321,10 +318,29 @@ pub(crate) fn incremental_delete_orphaned(
     Ok(n == ids.len())
 }
 
-pub(crate) fn delete_temp_pin(txn: &Transaction, alias: i64) -> rusqlite::Result<()> {
+pub(crate) fn delete_temp_pin(txn: &Transaction, pin: i64) -> rusqlite::Result<()> {
     txn.prepare_cached("DELETE FROM temp_pins WHERE id = ?")?
-        .execute(&[alias])?;
+        .execute(&[pin])?;
     Ok(())
+}
+
+pub(crate) fn assign_temp_pin(
+    txn: &Transaction,
+    mut pin: i64,
+    links: Vec<impl ToSql>,
+) -> crate::Result<i64> {
+    delete_temp_pin(txn, pin)?;
+    if links.is_empty() {
+        // reset the pin to the original state. Next time we get a new id.
+        pin = 0;
+    } else {
+        // we can reuse the id
+        for link in links {
+            let id = get_or_create_id(txn, link)?;
+            add_temp_pin(txn, id, &mut pin)?;
+        }
+    }
+    Ok(pin)
 }
 
 pub(crate) struct PutBlockResult {
@@ -334,12 +350,28 @@ pub(crate) struct PutBlockResult {
     pub(crate) block_exists: bool,
 }
 
+pub(crate) fn add_temp_pin(txn: &Transaction, id: i64, pin_id: &mut i64) -> crate::Result<()> {
+    if *pin_id > 0 {
+        txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")?
+            .execute(&[*pin_id, id])?;
+    } else {
+        // since we are not using an autoincrement column, this will reuse ids.
+        // I think this is safe, but is it really? deserves some thought.
+        *pin_id = txn
+            .prepare_cached("SELECT COALESCE(MAX(id), 1) + 1 FROM temp_pins")?
+            .query_row(NO_PARAMS, |row| row.get(0))?;
+        txn.prepare_cached("INSERT INTO temp_pins (id, block_id) VALUES (?, ?)")?
+            .execute(&[*pin_id, id])?;
+    }
+    Ok(())
+}
+
 pub(crate) fn put_block<C: ToSql>(
     txn: &Transaction,
     key: &C,
     data: &[u8],
     links: impl IntoIterator<Item = C>,
-    alias: Option<&AtomicI64>,
+    pin: &mut Option<i64>,
 ) -> crate::Result<PutBlockResult> {
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
@@ -348,21 +380,8 @@ pub(crate) fn put_block<C: ToSql>(
         .optional()?
         .is_some();
     // create a temporary alias for the block, even if it already exists
-    if let Some(alias) = alias {
-        let alias_id = alias.load(Ordering::SeqCst);
-        if alias_id > 0 {
-            txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")?
-                .execute(&[alias_id, id])?;
-        } else {
-            // since we are not using an autoincrement column, this will reuse ids.
-            // I think this is safe, but is it really? deserves some thought.
-            let alias_id: i64 = txn
-                .prepare_cached("SELECT COALESCE(MAX(id), 1) + 1 FROM temp_pins")?
-                .query_row(NO_PARAMS, |row| row.get(0))?;
-            txn.prepare_cached("INSERT INTO temp_pins (id, block_id) VALUES (?, ?)")?
-                .execute(&[alias_id, id])?;
-            alias.store(alias_id, Ordering::SeqCst);
-        }
+    if let Some(pin) = pin {
+        add_temp_pin(txn, id, pin)?;
     }
     if !block_exists {
         // add the block itself

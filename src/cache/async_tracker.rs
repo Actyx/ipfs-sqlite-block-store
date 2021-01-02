@@ -36,25 +36,25 @@ where
     S: Spawner,
     T: CacheTracker + Send + 'static,
 {
-    fn blocks_accessed(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
             inner.lock().unwrap().blocks_accessed(blocks);
         });
     }
 
-    fn blocks_written(&mut self, blocks: Vec<WriteInfo>) {
+    fn blocks_written(&self, blocks: Vec<WriteInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
             inner.lock().unwrap().blocks_written(blocks);
         });
     }
 
-    fn blocks_deleted(&mut self, blocks: Vec<BlockInfo>) {
+    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
         self.inner.lock().unwrap().blocks_deleted(blocks);
     }
 
-    fn retain_ids(&mut self, ids: &[i64]) {
+    fn retain_ids(&self, ids: &[i64]) {
         self.inner.lock().unwrap().retain_ids(ids);
     }
 
