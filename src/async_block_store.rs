@@ -81,6 +81,10 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         self.unblock(move |store| store.alias_many(aliases))
     }
 
+    pub fn flush(&self) -> AsyncResult<()> {
+        self.unblock(|store| store.flush())
+    }
+
     pub fn gc(&self) -> AsyncResult<()> {
         self.unblock(|store| store.gc())
     }

@@ -22,19 +22,15 @@ use tracing::*;
 use crate::{
     cache::{BlockInfo, CacheTracker},
     cidbytes::CidBytes,
-    SizeTargets, StoreStats,
+    SizeTargets, StoreStats, Synchronous,
 };
 
 const PRAGMAS: &str = r#"
 -- this must be done before changing the database via the CLI!
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
--- this is the most conservative mode. This only works if we have few, large transactions
-PRAGMA synchronous = FULL;
 -- I tried different even larger values for this. Did not make a difference.
 PRAGMA page_size = 4096;
--- Total cache size 32 megabytes
-PRAGMA cache_size = 8192;
 "#;
 
 const INIT: &str = r#"
@@ -576,8 +572,15 @@ pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
-pub(crate) fn init_db(conn: &mut Connection, is_memory: bool) -> anyhow::Result<()> {
+pub(crate) fn init_db(
+    conn: &mut Connection,
+    is_memory: bool,
+    cache_pages: i64,
+    synchronous: Synchronous,
+) -> anyhow::Result<()> {
     conn.execute_batch(PRAGMAS)?;
+    conn.pragma_update(None, "synchronous", &synchronous.to_string())?;
+    conn.pragma_update(None, "cache_pages", &cache_pages)?;
     let foreign_keys: i64 = conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
     let journal_mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
     let expected_journal_mode = if is_memory { "memory" } else { "wal" };

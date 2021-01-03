@@ -138,10 +138,30 @@ impl SizeTargets {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Synchronous {
+    // this is the most conservative mode. This only works if we have few, large transactions
+    Full,
+    Normal,
+    Off,
+}
+
+impl fmt::Display for Synchronous {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Synchronous::Full => "FULL",
+            Synchronous::Normal => "NORMAL",
+            Synchronous::Off => "OFF",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct Config {
     size_targets: SizeTargets,
     cache_tracker: Box<dyn CacheTracker>,
+    pragma_synchronous: Synchronous,
+    pragma_cache_pages: u64,
 }
 
 impl Default for Config {
@@ -149,6 +169,8 @@ impl Default for Config {
         Self {
             size_targets: Default::default(),
             cache_tracker: Box::new(NoopCacheTracker),
+            pragma_synchronous: Synchronous::Full, // most conservative setting
+            pragma_cache_pages: 8192, // 32 megabytes with the default page size of 4096
         }
     }
 }
@@ -162,6 +184,14 @@ impl Config {
     /// Set strategy for which non-pinned blocks to keep in case one of the size targets is exceeded.
     pub fn with_cache_tracker<T: CacheTracker + 'static>(mut self, cache_tracker: T) -> Self {
         self.cache_tracker = Box::new(cache_tracker);
+        self
+    }
+    pub fn with_pragma_synchronous(mut self, value: Synchronous) -> Self {
+        self.pragma_synchronous = value;
+        self
+    }
+    pub fn with_pragma_cache_pages(mut self, value: u64) -> Self {
+        self.pragma_cache_pages = value;
         self
     }
 }
@@ -297,7 +327,12 @@ impl BlockStore {
     /// Create an in memory block store with the given config
     pub fn memory(config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
-        init_db(&mut conn, true)?;
+        init_db(
+            &mut conn,
+            true,
+            config.pragma_cache_pages as i64,
+            config.pragma_synchronous,
+        )?;
         Ok(Self {
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
@@ -308,7 +343,12 @@ impl BlockStore {
     /// Create a persistent block store with the given config
     pub fn open(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
         let mut conn = Connection::open(path)?;
-        init_db(&mut conn, false)?;
+        init_db(
+            &mut conn,
+            false,
+            config.pragma_cache_pages as i64,
+            config.pragma_synchronous,
+        )?;
         let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
@@ -349,6 +389,12 @@ impl BlockStore {
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
         })
+    }
+
+    pub fn flush(&self) -> crate::Result<()> {
+        // TODO: check if this works! We are always in WAL mode.
+        // https://www.sqlite.org/pragma.html#pragma_wal_checkpoint
+        Ok(self.conn.pragma_update(None, "wal_checkpoint", &"FULL")?)
     }
 
     pub fn integrity_check(&self) -> crate::Result<()> {
