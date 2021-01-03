@@ -53,6 +53,11 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         }
     }
 
+    /// Wrap an Arc<Mutex<BlockStore>>
+    pub fn from_arc(runtime: R, inner: Arc<Mutex<BlockStore>>) -> Self {
+        Self { runtime, inner }
+    }
+
     pub fn temp_pin(&self) -> AsyncResult<AsyncTempPin> {
         self.unblock(|store| Ok(AsyncTempPin::new(store.temp_pin())))
     }
