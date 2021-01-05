@@ -3,11 +3,11 @@ use crate::{
     async_block_store::{AsyncBlockStore, GcConfig, RuntimeAdapter},
     cache::CacheTracker,
     cache::InMemCacheTracker,
-    cache::{BlockInfo, SortByIdCacheTracker, SqliteCacheTracker, WriteInfo},
+    cache::{SortByIdCacheTracker, SqliteCacheTracker},
     Block, BlockStore, Config, OwnedBlock, SizeTargets,
 };
 use fnv::FnvHashSet;
-use futures::{channel::mpsc::UnboundedSender, prelude::*};
+use futures::prelude::*;
 use libipld::{
     cbor::DagCborCodec,
     cid::Cid,
@@ -15,10 +15,7 @@ use libipld::{
 };
 use libipld::{prelude::*, DagCbor};
 use rusqlite::{params, Connection};
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 use tempdir::TempDir;
 
 #[derive(Debug, DagCbor)]
@@ -484,77 +481,4 @@ fn broken_db() -> anyhow::Result<()> {
     let store = BlockStore::open("test-data/broken.sqlite", Config::default())?;
     assert!(store.integrity_check().is_err());
     Ok(())
-}
-
-#[derive(Debug)]
-struct Tap<T> {
-    inner: T,
-    subscriptions: Arc<Mutex<Vec<UnboundedSender<StorageEvent>>>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum StorageEvent {
-    Insert(Cid),
-    Remove(Cid),
-}
-
-impl<T: CacheTracker> Tap<T> {
-    pub fn new(inner: T) -> Self {
-        Self {
-            inner,
-            subscriptions: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn subscribe(&self) -> impl Stream<Item = StorageEvent> + Send + Unpin {
-        let (sender, receiver) = futures::channel::mpsc::unbounded();
-        self.subscriptions.lock().unwrap().push(sender);
-        receiver
-    }
-
-    fn publish(&self, events: impl Iterator<Item = StorageEvent>) {
-        for event in events {
-            self.publish_one(event);
-        }
-    }
-
-    fn publish_one(&self, event: StorageEvent) {
-        self.subscriptions
-            .lock()
-            .unwrap()
-            .retain(|subscription| subscription.unbounded_send(event.clone()).is_ok())
-    }
-}
-
-impl<T: CacheTracker> CacheTracker for Tap<T> {
-    fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
-        self.inner.blocks_accessed(blocks);
-    }
-
-    fn blocks_written(&self, blocks: Vec<WriteInfo>) {
-        self.publish(
-            blocks
-                .iter()
-                .filter(|block| !block.block_exists())
-                .map(|block| StorageEvent::Insert(*block.cid())),
-        );
-        self.inner.blocks_written(blocks);
-    }
-
-    fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
-        self.publish(
-            blocks
-                .iter()
-                .map(|block| StorageEvent::Remove(*block.cid())),
-        );
-        self.inner.blocks_deleted(blocks);
-    }
-
-    fn sort_ids(&self, ids: &mut [i64]) {
-        self.inner.sort_ids(ids);
-    }
-
-    fn retain_ids(&self, ids: &[i64]) {
-        self.inner.retain_ids(ids);
-    }
 }
