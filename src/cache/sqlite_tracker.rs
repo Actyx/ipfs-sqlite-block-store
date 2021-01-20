@@ -1,11 +1,12 @@
 use super::{BlockInfo, CacheTracker};
 use fnv::{FnvHashMap, FnvHashSet};
+use parking_lot::Mutex;
 use rusqlite::{Connection, Transaction, NO_PARAMS};
 use std::{
     fmt::Debug,
     ops::{Deref, DerefMut},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Instant, SystemTime},
 };
 use tracing::*;
@@ -150,7 +151,7 @@ where
         if items.is_empty() {
             return;
         }
-        attempt_txn(self.conn.lock().unwrap(), |txn| {
+        attempt_txn(self.conn.lock(), |txn| {
             for (id, accessed) in items {
                 set_accessed(txn, id, accessed as i64)?;
             }
@@ -159,7 +160,7 @@ where
     }
 
     fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
-        attempt_txn(self.conn.lock().unwrap(), |txn| {
+        attempt_txn(self.conn.lock(), |txn| {
             for block in blocks {
                 delete_id(txn, block.id)?;
             }
@@ -169,7 +170,7 @@ where
 
     fn retain_ids(&self, ids: &[i64]) {
         let ids = ids.iter().cloned().collect::<FnvHashSet<i64>>();
-        attempt_txn(self.conn.lock().unwrap(), move |txn| {
+        attempt_txn(self.conn.lock(), move |txn| {
             for id in get_ids(txn)? {
                 if !&ids.contains(&id) {
                     delete_id(txn, id)?;
@@ -180,7 +181,7 @@ where
     }
 
     fn sort_ids(&self, ids: &mut [i64]) {
-        attempt_ro_txn(self.conn.lock().unwrap(), |txn| {
+        attempt_ro_txn(self.conn.lock(), |txn| {
             let t0 = Instant::now();
             let mut accessed = ids
                 .iter()

@@ -2,11 +2,8 @@ use crate::{Block, BlockStore, StoreStats, TempPin};
 use futures::future::BoxFuture;
 use futures::prelude::*;
 use libipld::Cid;
-use std::{
-    iter::FromIterator,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use parking_lot::Mutex;
+use std::{iter::FromIterator, sync::Arc, time::Duration};
 use tracing::*;
 
 #[derive(Clone)]
@@ -228,7 +225,7 @@ impl<R: RuntimeAdapter> AsyncBlockStore<R> {
         let runtime = self.runtime.clone();
         let inner = self.inner.clone();
         runtime
-            .unblock(move || f(&mut inner.lock().unwrap()))
+            .unblock(move || f(&mut inner.lock()))
             .err_into()
             .map(|x| x.and_then(|x| x))
             .boxed()

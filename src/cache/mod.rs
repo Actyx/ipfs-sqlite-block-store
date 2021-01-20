@@ -3,13 +3,15 @@ use libipld::Cid;
 use std::{
     fmt::Debug,
     ops::{Deref, DerefMut},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 mod async_tracker;
 mod sqlite_tracker;
 pub use async_tracker::{AsyncCacheTracker, Spawner};
+use parking_lot::Mutex;
 pub use sqlite_tracker::SqliteCacheTracker;
+
 #[cfg(test)]
 mod tests;
 
@@ -194,7 +196,7 @@ where
     /// called whenever blocks were accessed
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         let now = Instant::now().checked_duration_since(self.created).unwrap();
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         for block in blocks {
             if let Some(value) = (self.mk_cache_entry)(now, block) {
                 cache.insert(block.id, value);
@@ -206,7 +208,7 @@ where
 
     /// notification that these ids no longer have to be tracked
     fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         for block in blocks {
             cache.remove(&block.id);
         }
@@ -215,13 +217,13 @@ where
     /// notification that only these ids should be retained
     fn retain_ids(&self, ids: &[i64]) {
         let ids = ids.iter().cloned().collect::<FnvHashSet<_>>();
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.retain(|id, _| ids.contains(id));
     }
 
     /// sort ids by importance. More important ids should go to the end.
     fn sort_ids(&self, ids: &mut [i64]) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         ids.sort_unstable_by_key(move |id| get_key(&mut cache, *id));
     }
 }
@@ -229,7 +231,7 @@ where
 impl<T: Debug, F> std::fmt::Debug for InMemCacheTracker<T, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemLruCacheTracker")
-            .field("cache", &self.cache.lock().unwrap())
+            .field("cache", &self.cache.lock())
             .finish()
     }
 }
