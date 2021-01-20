@@ -384,6 +384,7 @@ dependencies = [
  "itertools",
  "libipld",
  "multihash",
+ "parking_lot",
  "rusqlite",
  "tempdir",
  "tokio",

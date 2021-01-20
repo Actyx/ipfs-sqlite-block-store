@@ -1,8 +1,6 @@
 use super::{BlockInfo, CacheTracker, WriteInfo};
-use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{fmt::Debug, sync::Arc};
 
 /// Wrapper around a spawn function
 pub trait Spawner: Send {
@@ -39,26 +37,26 @@ where
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
-            inner.lock().unwrap().blocks_accessed(blocks);
+            inner.lock().blocks_accessed(blocks);
         });
     }
 
     fn blocks_written(&self, blocks: Vec<WriteInfo>) {
         let inner = self.inner.clone();
         self.spawner.spawn_blocking(move || {
-            inner.lock().unwrap().blocks_written(blocks);
+            inner.lock().blocks_written(blocks);
         });
     }
 
     fn blocks_deleted(&self, blocks: Vec<BlockInfo>) {
-        self.inner.lock().unwrap().blocks_deleted(blocks);
+        self.inner.lock().blocks_deleted(blocks);
     }
 
     fn retain_ids(&self, ids: &[i64]) {
-        self.inner.lock().unwrap().retain_ids(ids);
+        self.inner.lock().retain_ids(ids);
     }
 
     fn sort_ids(&self, ids: &mut [i64]) {
-        self.inner.lock().unwrap().sort_ids(ids);
+        self.inner.lock().sort_ids(ids);
     }
 }

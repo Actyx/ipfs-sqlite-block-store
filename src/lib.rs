@@ -76,6 +76,7 @@ use libipld::{
     store::StoreParams,
     Ipld, IpldCodec,
 };
+use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName};
 use std::{
     convert::TryFrom,
@@ -85,7 +86,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::Duration,
 };
@@ -248,7 +249,7 @@ impl Drop for TempPin {
         if alias > 0 {
             // not sure if we have to guard against double drop, but it certainly does not hurt.
             *id = 0;
-            self.expired_temp_pins.lock().unwrap().push(alias);
+            self.expired_temp_pins.lock().push(alias);
         }
     }
 }
@@ -570,10 +571,7 @@ impl BlockStore {
         // atomically grab the expired_temp_pins until now
         let expired_temp_pins = {
             let mut result = Vec::new();
-            std::mem::swap(
-                self.expired_temp_pins.lock().unwrap().deref_mut(),
-                &mut result,
-            );
+            std::mem::swap(self.expired_temp_pins.lock().deref_mut(), &mut result);
             result
         };
         let (deleted, complete) = log_execution_time("gc", Duration::from_secs(1), || {
