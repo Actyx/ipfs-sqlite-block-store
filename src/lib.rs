@@ -79,6 +79,7 @@ use libipld::{
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName};
 use std::{
+    collections::BTreeSet,
     convert::TryFrom,
     fmt,
     iter::FromIterator,
@@ -650,7 +651,7 @@ impl BlockStore {
                     let links = links(&block)?
                         .iter()
                         .map(CidBytes::try_from)
-                        .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
+                        .collect::<std::result::Result<BTreeSet<_>, cid::Error>>()?;
                     let res = put_block(txn, &cid_bytes, &block.data(), links, &mut pin0)?;
                     Ok(WriteInfo::new(
                         BlockInfo::new(res.id, block.cid(), block.data().len()),
