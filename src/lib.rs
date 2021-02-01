@@ -70,6 +70,7 @@ use crate::cidbytes::CidBytes;
 use cache::{BlockInfo, CacheTracker, NoopCacheTracker, WriteInfo};
 use db::*;
 pub use error::{BlockStoreError, Result};
+use fnv::FnvHashSet;
 use libipld::{
     cid::{self, Cid},
     codec::Codec,
@@ -650,7 +651,7 @@ impl BlockStore {
                     let links = links(&block)?
                         .iter()
                         .map(CidBytes::try_from)
-                        .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
+                        .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
                     let res = put_block(txn, &cid_bytes, &block.data(), links, &mut pin0)?;
                     Ok(WriteInfo::new(
                         BlockInfo::new(res.id, block.cid(), block.data().len()),

@@ -10,7 +10,7 @@ use std::{convert::TryFrom, io::Cursor};
 const MAX_SIZE: usize = 39;
 
 /// a representation of a cid that implements AsRef<[u8]>
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CidBytes {
     size: u8,
     data: [u8; MAX_SIZE],

@@ -109,7 +109,7 @@ fn insert_get() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let b = block("b");
     let c = block("c");
-    let a = links("a", vec![&b, &c]);
+    let a = links("a", vec![&b, &c, &c]);
     store.put_block(&a, None)?;
     // we should have all three cids
     assert!(store.has_cid(a.cid())?);
@@ -174,13 +174,13 @@ fn incremental_insert() -> anyhow::Result<()> {
     assert_eq!(store.get_block(a.cid())?, Some(a.data().to_vec()));
     // check descendants
     assert_eq!(
-        store.get_descendants::<Vec<_>>(a.cid())?,
-        vec![*a.cid(), *b.cid(), *c.cid(), *d.cid(), *e.cid()]
+        store.get_descendants::<FnvHashSet<_>>(a.cid())?,
+        [a.cid(), b.cid(), c.cid(), d.cid(), e.cid()].iter().copied().copied().collect::<FnvHashSet<_>>()
     );
     // check missing blocks - should be b and c
     assert_eq!(
-        store.get_missing_blocks::<Vec<_>>(a.cid())?,
-        vec![*b.cid(), *d.cid(), *e.cid()]
+        store.get_missing_blocks::<FnvHashSet<_>>(a.cid())?,
+        [b.cid(), d.cid(), e.cid()].iter().copied().copied().collect::<FnvHashSet<_>>()
     );
     // alias the root
     store.alias(b"alias1", Some(a.cid()))?;
