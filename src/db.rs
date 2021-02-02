@@ -125,19 +125,19 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
     // drop the old refs table, since the content can be extracted from blocks_v0
     txn.execute_batch("DROP TABLE IF EXISTS refs;")?;
     txn.execute_batch(INIT)?;
-    let mut stmt = txn.prepare("SELECT COUNT(*) FROM blocks_v0")?;
-    let num_blocks: i64 = stmt.query_row(NO_PARAMS, |r| r.get(0))?;
+    let num_blocks: i64 =
+        txn.query_row("SELECT COUNT(*) FROM blocks_v0", NO_PARAMS, |r| r.get(0))?;
     let mut stmt = txn.prepare("SELECT * FROM blocks_v0")?;
     let block_iter = stmt.query_map(params![], |row| {
         Ok((row.get::<_, Vec<u8>>(2)?, row.get::<_, Vec<u8>>(3)?))
     })?;
     for (i, block) in block_iter.enumerate() {
-        if i % 1000 == 0 {
+        if num_blocks != 0 && i % 1000 == 0 {
             info!(
                 "converting to new blocks, block {} of {} ({}%)",
                 i,
                 num_blocks,
-                i / (num_blocks as usize) * 100
+                100 * i / (num_blocks as usize)
             );
         }
         let (cid, data) = block?;
