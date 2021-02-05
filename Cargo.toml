@@ -14,7 +14,7 @@ derive_more = "0.99.11"
 fnv = "1.0.7"
 futures = "0.3.8"
 libipld = { version = "0.9.0", default-features = false }
-rusqlite = { version = "0.24.1", features = ["backup"] }
+rusqlite = { version = "0.24.1", features = ["backup", "bundled"] }
 tracing = "0.1.22"
 parking_lot = "0.11.1"
 
