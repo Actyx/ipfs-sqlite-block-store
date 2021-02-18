@@ -540,6 +540,15 @@ impl BlockStore {
         Ok(res)
     }
 
+    /// list all aliases
+    pub fn aliases(&self) -> Result<Vec<Vec<u8>>> {
+        in_ro_txn(&self.conn, aliases)
+    }
+
+    pub fn vacuum(&self) -> Result<()> {
+        vacuum(&self.conn)
+    }
+
     /// do a full garbage collection
     ///
     /// for a large block store, this can take several seconds to minutes. If that is not acceptable,

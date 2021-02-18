@@ -579,6 +579,18 @@ pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
+pub(crate) fn aliases(txn: &Transaction) -> crate::Result<Vec<Vec<u8>>> {
+    Ok(txn
+        .prepare_cached(r#"SELECT name FROM aliases"#)?
+        .query_map(NO_PARAMS, |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?)
+}
+
+pub(crate) fn vacuum(conn: &Connection) -> crate::Result<()> {
+    conn.execute("VACUUM;", NO_PARAMS)?;
+    Ok(())
+}
+
 pub(crate) fn init_db(
     conn: &mut Connection,
     is_memory: bool,
