@@ -379,6 +379,27 @@ fn test_reverse_alias() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn test_vacuum() -> anyhow::Result<()> {
+    let store = BlockStore::memory(Config::default())?;
+    store.vacuum()?;
+    Ok(())
+}
+
+#[test]
+fn test_aliases() -> anyhow::Result<()> {
+    let mut store = BlockStore::memory(Config::default())?;
+    let block = pinned(0);
+    store.put_block(&block, None)?;
+    store.alias(&b"a", Some(block.cid()))?;
+    store.alias(&b"b", Some(block.cid()))?;
+    store.alias(&b"c", Some(block.cid()))?;
+    let mut aliases = store.aliases()?;
+    aliases.sort();
+    assert_eq!(aliases, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    Ok(())
+}
+
 #[derive(Clone)]
 struct TokioRuntime;
 
