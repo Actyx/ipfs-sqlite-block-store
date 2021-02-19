@@ -541,8 +541,16 @@ impl BlockStore {
     }
 
     /// list all aliases
-    pub fn aliases(&self) -> Result<Vec<Vec<u8>>> {
-        in_ro_txn(&self.conn, aliases)
+    pub fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&self) -> Result<C> {
+        let result: Vec<(Vec<u8>, CidBytes)> = in_ro_txn(&self.conn, aliases)?;
+        let res = result
+            .into_iter()
+            .map(|(alias, cid)| {
+                let cid = Cid::try_from(&cid)?;
+                Ok((alias, cid))
+            })
+            .collect::<cid::Result<C>>()?;
+        Ok(res)
     }
 
     pub fn vacuum(&self) -> Result<()> {

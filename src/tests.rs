@@ -175,12 +175,20 @@ fn incremental_insert() -> anyhow::Result<()> {
     // check descendants
     assert_eq!(
         store.get_descendants::<FnvHashSet<_>>(a.cid())?,
-        [a.cid(), b.cid(), c.cid(), d.cid(), e.cid()].iter().copied().copied().collect::<FnvHashSet<_>>()
+        [a.cid(), b.cid(), c.cid(), d.cid(), e.cid()]
+            .iter()
+            .copied()
+            .copied()
+            .collect::<FnvHashSet<_>>()
     );
     // check missing blocks - should be b and c
     assert_eq!(
         store.get_missing_blocks::<FnvHashSet<_>>(a.cid())?,
-        [b.cid(), d.cid(), e.cid()].iter().copied().copied().collect::<FnvHashSet<_>>()
+        [b.cid(), d.cid(), e.cid()]
+            .iter()
+            .copied()
+            .copied()
+            .collect::<FnvHashSet<_>>()
     );
     // alias the root
     store.alias(b"alias1", Some(a.cid()))?;
@@ -390,13 +398,21 @@ fn test_vacuum() -> anyhow::Result<()> {
 fn test_aliases() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let block = pinned(0);
+    let cid = block.cid();
     store.put_block(&block, None)?;
-    store.alias(&b"a", Some(block.cid()))?;
-    store.alias(&b"b", Some(block.cid()))?;
-    store.alias(&b"c", Some(block.cid()))?;
-    let mut aliases = store.aliases()?;
-    aliases.sort();
-    assert_eq!(aliases, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    store.alias(&b"a", Some(cid))?;
+    store.alias(&b"b", Some(cid))?;
+    store.alias(&b"c", Some(cid))?;
+    let mut aliases: Vec<(Vec<u8>, Cid)> = store.aliases()?;
+    aliases.sort_by_key(|x| x.0.clone());
+    assert_eq!(
+        aliases,
+        vec![
+            (b"a".to_vec(), *cid),
+            (b"b".to_vec(), *cid),
+            (b"c".to_vec(), *cid),
+        ]
+    );
     Ok(())
 }
 

@@ -579,11 +579,11 @@ pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
-pub(crate) fn aliases(txn: &Transaction) -> crate::Result<Vec<Vec<u8>>> {
+pub(crate) fn aliases<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<(Vec<u8>, C)>> {
     Ok(txn
-        .prepare_cached(r#"SELECT name FROM aliases"#)?
-        .query_map(NO_PARAMS, |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?)
+        .prepare_cached(r#"SELECT name, cid FROM aliases JOIN cids ON id = block_id"#)?
+        .query_map(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(Vec<u8>, C)>>>()?)
 }
 
 pub(crate) fn vacuum(conn: &Connection) -> crate::Result<()> {
