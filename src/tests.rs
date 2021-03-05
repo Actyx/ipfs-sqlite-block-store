@@ -4,7 +4,7 @@ use crate::{
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
-    Block, BlockStore, Config, OwnedBlock, SizeTargets,
+    Block, BlockStore, Config, DbPath, OwnedBlock, SizeTargets,
 };
 use fnv::FnvHashSet;
 use futures::prelude::*;
@@ -512,10 +512,30 @@ async fn gc_loop() -> anyhow::Result<()> {
 
 #[test]
 fn broken_db() -> anyhow::Result<()> {
-    let store = BlockStore::open("test-data/mini.sqlite", Config::default())?;
+    let tmp = TempDir::new("broken_db")?;
+    let path = tmp.path().join("mini.sqlite");
+    std::fs::copy("test-data/mini.sqlite", &path)?;
+    let store = BlockStore::open_path(DbPath::File(path), Config::default())?;
     assert!(store.integrity_check().is_ok());
 
-    let store = BlockStore::open("test-data/broken.sqlite", Config::default())?;
+    let path = tmp.path().join("broken.sqlite");
+    std::fs::copy("test-data/broken.sqlite", &path)?;
+    let store = BlockStore::open_path(DbPath::File(path), Config::default())?;
     assert!(store.integrity_check().is_err());
+    Ok(())
+}
+
+#[test]
+fn shared_file() -> anyhow::Result<()> {
+    let tmp = TempDir::new("shared_file")?;
+    let path = tmp.path().join("test.sqlite");
+    let mut db1 = BlockStore::open_path(DbPath::File(path.clone()), Config::default())?;
+    let db2 = BlockStore::open_path(DbPath::File(path), Config::default())?;
+
+    for i in 0..10 {
+        let block = block(&format!("block-{}", i));
+        db1.put_block(&block, None)?;
+        assert_eq!(db2.get_block(block.cid())?, Some(block.data().to_vec()));
+    }
     Ok(())
 }

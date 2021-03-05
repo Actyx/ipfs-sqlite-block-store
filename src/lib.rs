@@ -78,13 +78,13 @@ use libipld::{
     Ipld, IpldCodec,
 };
 use parking_lot::Mutex;
-use rusqlite::{Connection, DatabaseName};
+use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
     convert::TryFrom,
     fmt,
     iter::FromIterator,
     ops::DerefMut,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicI64, Ordering},
         Arc,
@@ -92,6 +92,18 @@ use std::{
     time::Duration,
 };
 use tracing::*;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DbPath {
+    File(PathBuf),
+    Memory,
+}
+
+impl DbPath {
+    fn is_memory(&self) -> bool {
+        !matches!(self, DbPath::File(_))
+    }
+}
 
 /// Size targets for a store. Gc of non-pinned blocks will start once one of the size targets is exceeded.
 ///
@@ -164,6 +176,10 @@ pub struct Config {
     cache_tracker: Box<dyn CacheTracker>,
     pragma_synchronous: Synchronous,
     pragma_cache_pages: u64,
+    // open in readonly mode
+    read_only: bool,
+    // create if it does not yet exist
+    create: bool,
 }
 
 impl Default for Config {
@@ -173,11 +189,17 @@ impl Default for Config {
             cache_tracker: Box::new(NoopCacheTracker),
             pragma_synchronous: Synchronous::Full, // most conservative setting
             pragma_cache_pages: 8192, // 32 megabytes with the default page size of 4096
+            read_only: false,
+            create: true,
         }
     }
 }
 
 impl Config {
+    pub fn with_read_only(mut self, value: bool) -> Self {
+        self.read_only = value;
+        self
+    }
     /// Set size targets for the store
     pub fn with_size_targets(mut self, size_targets: SizeTargets) -> Self {
         self.size_targets = size_targets;
@@ -326,28 +348,29 @@ fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
 }
 
 impl BlockStore {
-    /// Create an in memory block store with the given config
-    pub fn memory(config: Config) -> crate::Result<Self> {
-        let mut conn = Connection::open_in_memory()?;
-        init_db(
-            &mut conn,
-            true,
-            config.pragma_cache_pages as i64,
-            config.pragma_synchronous,
-        )?;
-        Ok(Self {
-            conn,
-            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
-            config,
-        })
+    fn create_connection(db_path: DbPath, config: &Config) -> crate::Result<rusqlite::Connection> {
+        let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
+        flags |= if config.read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        };
+        if config.create && !config.read_only {
+            flags |= OpenFlags::SQLITE_OPEN_CREATE
+        }
+        let conn = match db_path {
+            DbPath::Memory => Connection::open_in_memory()?,
+            DbPath::File(path) => Connection::open_with_flags(path, flags)?,
+        };
+        Ok(conn)
     }
 
-    /// Create a persistent block store with the given config
-    pub fn open(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
-        let mut conn = Connection::open(path)?;
+    pub fn open_path(db_path: DbPath, config: Config) -> crate::Result<Self> {
+        let is_memory = db_path.is_memory();
+        let mut conn = Self::create_connection(db_path, &config)?;
         init_db(
             &mut conn,
-            false,
+            is_memory,
             config.pragma_cache_pages as i64,
             config.pragma_synchronous,
         )?;
@@ -360,12 +383,24 @@ impl BlockStore {
         })
     }
 
+    /// Create an in memory block store with the given config
+    pub fn memory(config: Config) -> crate::Result<Self> {
+        Self::open_path(DbPath::Memory, config)
+    }
+
+    /// Create a persistent block store with the given config
+    pub fn open(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
+        let mut pb: PathBuf = PathBuf::new();
+        pb.push(path);
+        Self::open_path(DbPath::File(pb), config)
+    }
+
     /// Open the file at the given path for testing.
     ///
     /// This will create a writeable in-memory database that is initialized with the content
     /// of the file at the given path.
     pub fn open_test(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
-        let mut conn = Connection::open_in_memory()?;
+        let mut conn = Self::create_connection(DbPath::Memory, &config)?;
         debug!(
             "Restoring in memory database from {}",
             path.as_ref().display()
