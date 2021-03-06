@@ -58,7 +58,6 @@
 //! - Pinning/aliasing a root does not require that the dag is complete
 //! - Aliases/named pins as opposed to unnamed and non-reference-counted pins
 //! - Temporary pins as a mechanism to keep blocks safe from gc while a tree is being constructed
-pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
 mod db;
