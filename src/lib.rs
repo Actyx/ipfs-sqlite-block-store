@@ -58,7 +58,6 @@
 //! - Pinning/aliasing a root does not require that the dag is complete
 //! - Aliases/named pins as opposed to unnamed and non-reference-counted pins
 //! - Temporary pins as a mechanism to keep blocks safe from gc while a tree is being constructed
-pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
 mod db;
@@ -759,5 +758,15 @@ impl BlockStore {
     /// Will return None if we don't have the data
     pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         Ok(self.get_blocks(std::iter::once(*cid))?.next().unwrap().1)
+    }
+
+    /// the underlying rusqlite connection
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// the underlying rusqlite connection as a mutable reference
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 }

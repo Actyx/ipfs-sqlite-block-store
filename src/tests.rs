@@ -1,13 +1,11 @@
 #![allow(clippy::many_single_char_names)]
 use crate::{
-    async_block_store::{AsyncBlockStore, GcConfig, RuntimeAdapter},
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
     Block, BlockStore, Config, DbPath, OwnedBlock, SizeTargets,
 };
 use fnv::FnvHashSet;
-use futures::prelude::*;
 use libipld::{
     cbor::DagCborCodec,
     cid::Cid,
@@ -416,23 +414,6 @@ fn test_aliases() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct TokioRuntime;
-
-impl RuntimeAdapter for TokioRuntime {
-    fn unblock<F, T>(self, f: F) -> futures::future::BoxFuture<'static, anyhow::Result<T>>
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        tokio::task::spawn_blocking(f).err_into().boxed()
-    }
-
-    fn sleep(&self, duration: Duration) -> futures::future::BoxFuture<()> {
-        tokio::time::sleep(duration).boxed()
-    }
-}
-
 #[test]
 fn temp_pin() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
@@ -453,60 +434,6 @@ fn temp_pin() -> anyhow::Result<()> {
     assert!(!store.has_block(a.cid())?);
     assert!(!store.has_block(b.cid())?);
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn temp_pin_async() -> anyhow::Result<()> {
-    let store = BlockStore::memory(Config::default())?;
-    let store = AsyncBlockStore::new(TokioRuntime, store);
-    let a = block("a");
-    let b = block("b");
-    let alias = store.temp_pin().await?;
-
-    store.put_block(a.clone(), Some(&alias)).await?;
-    store.gc().await?;
-    assert!(store.has_block(a.cid()).await?);
-
-    store.put_block(b.clone(), Some(&alias)).await?;
-    store.gc().await?;
-    assert!(store.has_block(b.cid()).await?);
-
-    drop(alias);
-    store.gc().await?;
-    assert!(!store.has_block(a.cid()).await?);
-    assert!(!store.has_block(b.cid()).await?);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn gc_loop() -> anyhow::Result<()> {
-    let store = BlockStore::memory(Config::default())?;
-    let store = AsyncBlockStore::new(TokioRuntime, store);
-    // let gc run in the background
-    let gc_loop = store.clone().gc_loop(GcConfig {
-        interval: Duration::from_millis(100),
-        min_blocks: 10000,
-        target_duration: Duration::from_secs(1),
-    });
-    let handle = tokio::spawn(gc_loop);
-
-    // add 2 blocks, one temp aliased, one not
-    let a = block("a");
-    let b = block("b");
-    let alias = store.temp_pin().await?;
-    store.put_block(a.clone(), Some(&alias)).await?;
-    store.put_block(b.clone(), None).await?;
-    // give GC opportunity to run
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert!(store.has_block(a.cid()).await?);
-    assert!(!store.has_block(b.cid()).await?);
-    drop(alias);
-    // give GC opportunity to run
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert!(!store.has_block(a.cid()).await?);
-    handle.abort();
     Ok(())
 }
 
