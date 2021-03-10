@@ -25,7 +25,7 @@ use std::{
 };
 use tracing::*;
 
-use crate::{cache::CacheTracker, SizeTargets, StoreStats};
+use crate::{cache::CacheTracker, CidBytes, SizeTargets, StoreStats};
 
 const PRAGMAS: &str = r#"
 -- this must be done before changing the database via the CLI!
@@ -241,8 +241,9 @@ WHERE
     })?;
     // give the cache tracker the opportunity to sort the non-pinned ids by value
     cache_tracker.sort_ids(&mut ids);
-    let mut block_size_stmt =
-        txn.prepare_cached("SELECT LENGTH(block) FROM blocks WHERE block_id = ?")?;
+    let mut block_size_stmt = txn.prepare_cached(
+        "SELECT LENGTH(block), cid FROM cids INNER JOIN blocks ON id = block_id AND id = ?;",
+    )?;
     let mut update_stats_stmt =
         txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?")?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM cids WHERE id = ?")?;
@@ -255,10 +256,12 @@ WHERE
             break;
         }
         trace!("deleting id {}", id);
-        let block_size: Option<i64> = block_size_stmt
-            .query_row(&[id], |row| row.get(0))
+        let block_size: Option<(i64, CidBytes)> = block_size_stmt
+            .query_row(&[id], |row| Ok((row.get(0)?, row.get(1)?)))
             .optional()?;
-        if let Some(block_size) = block_size {
+        if let Some((block_size, cid)) = block_size {
+            let cid = Cid::try_from(&cid)?;
+            info!("Deleted {}, {} bytes", cid, block_size);
             update_stats_stmt.execute(&[block_size])?;
             stats.count -= 1;
             stats.size -= block_size as u64;
