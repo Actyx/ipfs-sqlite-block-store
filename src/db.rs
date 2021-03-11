@@ -327,21 +327,15 @@ pub(crate) fn delete_temp_pin(txn: &Transaction, pin: i64) -> rusqlite::Result<(
     Ok(())
 }
 
-pub(crate) fn assign_temp_pin(
+pub(crate) fn extend_temp_pin(
     txn: &Transaction,
     mut pin: i64,
     links: Vec<impl ToSql>,
 ) -> crate::Result<i64> {
-    delete_temp_pin(txn, pin)?;
-    if links.is_empty() {
-        // reset the pin to the original state. Next time we get a new id.
-        pin = 0;
-    } else {
-        // we can reuse the id
-        for link in links {
-            let id = get_or_create_id(txn, link)?;
-            add_temp_pin(txn, id, &mut pin)?;
-        }
+    // we can reuse the id
+    for link in links {
+        let id = get_or_create_id(txn, link)?;
+        add_temp_pin(txn, id, &mut pin)?;
     }
     Ok(pin)
 }

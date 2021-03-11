@@ -58,7 +58,6 @@
 //! - Pinning/aliasing a root does not require that the dag is complete
 //! - Aliases/named pins as opposed to unnamed and non-reference-counted pins
 //! - Temporary pins as a mechanism to keep blocks safe from gc while a tree is being constructed
-pub mod async_block_store;
 pub mod cache;
 mod cidbytes;
 mod db;
@@ -482,7 +481,7 @@ impl BlockStore {
         })
     }
 
-    pub fn assign_temp_pin(
+    pub fn extend_temp_pin(
         &mut self,
         pin: &TempPin,
         links: impl IntoIterator<Item = Cid>,
@@ -493,7 +492,7 @@ impl BlockStore {
                 .into_iter()
                 .map(|x| CidBytes::try_from(&x))
                 .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-            assign_temp_pin(txn, pin0, links)
+            extend_temp_pin(txn, pin0, links)
         })?;
         pin.id.store(pin0, Ordering::SeqCst);
         Ok(())
