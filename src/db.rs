@@ -225,7 +225,7 @@ WITH RECURSIVE
     descendant_of(id) AS
     (
         SELECT block_id FROM aliases UNION SELECT block_id FROM temp_pins
-        UNION ALL
+        UNION
         SELECT DISTINCT child_id FROM refs JOIN descendant_of ON descendant_of.id=refs.parent_id
     )
 SELECT id FROM
