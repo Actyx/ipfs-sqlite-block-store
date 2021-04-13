@@ -466,3 +466,20 @@ fn shared_file() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn large_dag_gc() -> anyhow::Result<()> {
+    let mut store = BlockStore::memory(Config::default())?;
+    let mut l = Vec::new();
+    for i in 0..25 {
+        let block = links(&format!("node-{}", i), l.iter().collect());
+        store.put_block(&block, None)?;
+        l.push(block);
+    }
+    // pin the root
+    let cid = *l.last().as_ref().unwrap().cid();
+    store.alias((&cid).to_bytes(), Some(&cid))?;
+    // this takes forever
+    store.gc()?;
+    Ok(())
+}
