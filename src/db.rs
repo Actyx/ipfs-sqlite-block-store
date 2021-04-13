@@ -37,7 +37,7 @@ const INIT: &str = r#"
 PRAGMA user_version = 1;
 
 CREATE TABLE IF NOT EXISTS cids (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     cid BLOB UNIQUE NOT NULL
 );
 

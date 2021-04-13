@@ -471,7 +471,7 @@ fn shared_file() -> anyhow::Result<()> {
 fn large_dag_gc() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let mut l = Vec::new();
-    for i in 0..25 {
+    for i in 0..20 {
         let block = links(&format!("node-{}", i), l.iter().collect());
         store.put_block(&block, None)?;
         l.push(block);
