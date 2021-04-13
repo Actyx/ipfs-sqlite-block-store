@@ -1,6 +1,6 @@
 [package]
 name = "ipfs-sqlite-block-store"
-version = "0.3.0"
+version = "0.3.1"
 repository = "https://github.com/actyx/ipfs-sqlite-block-store"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "David Craven <david@craven.ch>", "Actyx AG"]
 edition = "2018"
