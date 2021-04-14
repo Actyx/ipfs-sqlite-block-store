@@ -14,7 +14,6 @@
 use libipld::{Cid, DefaultParams};
 use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
-    NO_PARAMS,
 };
 use std::{collections::BTreeSet, convert::TryFrom, time::Duration, time::Instant};
 use tracing::*;
@@ -115,7 +114,7 @@ fn user_version(txn: &Transaction) -> rusqlite::Result<u32> {
 fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
     let num: u32 = txn
         .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1;")?
-        .query_row(params![table], |row| row.get(0))?;
+        .query_row([table], |row| row.get(0))?;
     Ok(num > 0)
 }
 
@@ -125,10 +124,9 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
     // drop the old refs table, since the content can be extracted from blocks_v0
     txn.execute_batch("DROP TABLE IF EXISTS refs;")?;
     txn.execute_batch(INIT)?;
-    let num_blocks: i64 =
-        txn.query_row("SELECT COUNT(*) FROM blocks_v0", NO_PARAMS, |r| r.get(0))?;
+    let num_blocks: i64 = txn.query_row("SELECT COUNT(*) FROM blocks_v0", [], |r| r.get(0))?;
     let mut stmt = txn.prepare("SELECT * FROM blocks_v0")?;
-    let block_iter = stmt.query_map(params![], |row| {
+    let block_iter = stmt.query_map([], |row| {
         Ok((row.get::<_, Vec<u8>>(2)?, row.get::<_, Vec<u8>>(3)?))
     })?;
     for (i, block) in block_iter.enumerate() {
@@ -165,7 +163,7 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
     txn.prepare_cached("SELECT id FROM cids WHERE cid=?")?
-        .query_row(&[cid], |row| row.get(0))
+        .query_row([cid], |row| row.get(0))
         .optional()
 }
 
@@ -174,7 +172,7 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
     let (count, size): (i64, i64) = txn.prepare(
 "SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) FROM cids JOIN blocks ON id = block_id"
     )?
-    .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?;
+    .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(StoreStats {
         count: u64::try_from(count)?,
         size: u64::try_from(size)?,
@@ -185,7 +183,7 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
 pub(crate) fn get_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
     let (count, size): (i64, i64) = txn
         .prepare_cached("SELECT count, size FROM stats LIMIT 1")?
-        .query_row(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?;
+        .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let result = StoreStats {
         count: u64::try_from(count)?,
         size: u64::try_from(size)?,
@@ -200,7 +198,7 @@ fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64>
         id
     } else {
         txn.prepare_cached("INSERT INTO cids (cid) VALUES (?)")?
-            .execute(&[cid])?;
+            .execute([cid])?;
         txn.last_insert_rowid()
     })
 }
@@ -240,7 +238,7 @@ WHERE
     // log execution time of the non-interruptible query that computes the set of ids to delete
     let mut ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
         id_query
-            .query_map(NO_PARAMS, |row| row.get(0))?
+            .query_map([], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()
     })?;
     // give the cache tracker the opportunity to sort the non-pinned ids by value
@@ -267,7 +265,7 @@ WHERE
         if let Some((block_size, cid)) = block_size {
             let cid = Cid::try_from(&cid)?;
             let len: usize = usize::try_from(block_size)?;
-            update_stats_stmt.execute(&[block_size])?;
+            update_stats_stmt.execute([block_size])?;
             stats.count -= 1;
             stats.size -= block_size as u64;
             deleted.push(BlockInfo::new(*id, &cid, len));
@@ -299,7 +297,7 @@ pub(crate) fn incremental_delete_orphaned(
         txn.prepare_cached(
             "SELECT block_id FROM blocks WHERE block_id NOT IN (SELECT id FROM cids)",
         )?
-        .query_map(NO_PARAMS, |row| row.get(0))?
+        .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()
     })?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?")?;
@@ -315,7 +313,7 @@ pub(crate) fn incremental_delete_orphaned(
             break;
         }
         trace!("deleting block for id {}", id);
-        delete_stmt.execute(&[id])?;
+        delete_stmt.execute([id])?;
         n += 1;
     }
     Ok(n == ids.len())
@@ -323,7 +321,7 @@ pub(crate) fn incremental_delete_orphaned(
 
 pub(crate) fn delete_temp_pin(txn: &Transaction, pin: i64) -> rusqlite::Result<()> {
     txn.prepare_cached("DELETE FROM temp_pins WHERE id = ?")?
-        .execute(&[pin])?;
+        .execute([pin])?;
     Ok(())
 }
 
@@ -350,15 +348,15 @@ pub(crate) struct PutBlockResult {
 pub(crate) fn add_temp_pin(txn: &Transaction, id: i64, pin_id: &mut i64) -> crate::Result<()> {
     if *pin_id > 0 {
         txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")?
-            .execute(&[*pin_id, id])?;
+            .execute([*pin_id, id])?;
     } else {
         // since we are not using an autoincrement column, this will reuse ids.
         // I think this is safe, but is it really? deserves some thought.
         *pin_id = txn
             .prepare_cached("SELECT COALESCE(MAX(id), 1) + 1 FROM temp_pins")?
-            .query_row(NO_PARAMS, |row| row.get(0))?;
+            .query_row([], |row| row.get(0))?;
         txn.prepare_cached("INSERT INTO temp_pins (id, block_id) VALUES (?, ?)")?
-            .execute(&[*pin_id, id])?;
+            .execute([*pin_id, id])?;
     }
     Ok(())
 }
@@ -373,7 +371,7 @@ pub(crate) fn put_block<C: ToSql>(
     let id = get_or_create_id(&txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
-        .query_row(&[id], |_| Ok(()))
+        .query_row([id], |_| Ok(()))
         .optional()?
         .is_some();
     // create a temporary alias for the block, even if it already exists
@@ -387,14 +385,14 @@ pub(crate) fn put_block<C: ToSql>(
 
         // update the stats
         txn.prepare_cached("UPDATE stats SET count = count + 1, size = size + ?")?
-            .execute(&[data.len() as i64])?;
+            .execute([data.len() as i64])?;
 
         // insert the links
         let mut insert_ref =
             txn.prepare_cached("INSERT INTO refs (parent_id, child_id) VALUES (?,?)")?;
         for link in links {
             let child_id: i64 = get_or_create_id(&txn, link)?;
-            insert_ref.execute(params![id, child_id])?;
+            insert_ref.execute([id, child_id])?;
         }
     }
     Ok(PutBlockResult { id, block_exists })
@@ -408,7 +406,7 @@ pub(crate) fn get_block(
     let id = get_id(&txn, cid)?;
     Ok(if let Some(id) = id {
         txn.prepare_cached("SELECT block FROM blocks WHERE block_id = ?")?
-            .query_row(&[id], |row| row.get(0))
+            .query_row([id], |row| row.get(0))
             .optional()?
             .map(|b| (id, b))
     } else {
@@ -422,7 +420,7 @@ pub(crate) fn has_block(txn: &Transaction, cid: impl ToSql) -> crate::Result<boo
         .prepare_cached(
             "SELECT 1 FROM blocks, cids WHERE blocks.block_id = cids.id AND cids.cid = ?",
         )?
-        .query_row(&[cid], |_| Ok(()))
+        .query_row([cid], |_| Ok(()))
         .optional()?
         .is_some())
 }
@@ -431,7 +429,7 @@ pub(crate) fn has_block(txn: &Transaction, cid: impl ToSql) -> crate::Result<boo
 pub(crate) fn has_cid(txn: &Transaction, cid: impl ToSql) -> crate::Result<bool> {
     Ok(txn
         .prepare_cached("SELECT 1 FROM cids WHERE cids.cid = ?")?
-        .query_row(&[cid], |_| Ok(()))
+        .query_row([cid], |_| Ok(()))
         .optional()?
         .is_some())
 }
@@ -460,7 +458,7 @@ WITH RECURSIVE
     SELECT cid from cids JOIN descendant_ids ON cids.id = descendant_ids.id;
 "#,
         )?
-        .query_map(&[cid], |row| row.get(0))?
+        .query_map([cid], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?;
     Ok(res)
 }
@@ -490,7 +488,7 @@ WITH RECURSIVE
 SELECT cid from cids JOIN orphaned_ids ON cids.id = orphaned_ids.id
 "#,
     )?
-        .query_map(&[id], |row| row.get(0))?
+        .query_map([id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?;
     Ok(res)
 }
@@ -506,7 +504,7 @@ pub(crate) fn alias<C: ToSql>(
             .execute(params![name, id])?;
     } else {
         txn.prepare_cached("DELETE FROM aliases WHERE name = ?")?
-            .execute(&[name])?;
+            .execute([name])?;
     }
     Ok(())
 }
@@ -518,7 +516,7 @@ pub(crate) fn resolve<C: FromSql>(txn: &Transaction, name: &[u8]) -> crate::Resu
 SELECT cids.cid FROM aliases JOIN cids ON aliases.block_id = cids.id AND aliases.name = ?
 "#,
         )?
-        .query_row(params![name], |row| row.get(0))
+        .query_row([name], |row| row.get(0))
         .optional()?)
 }
 
@@ -540,7 +538,7 @@ WITH RECURSIVE
 SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = block_id;
 "#,
             )?
-            .query_map(params![id], |row| row.get(0))?
+            .query_map([id], |row| row.get(0))?
             .filter_map(|a| a.transpose())
             .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?,
         ))
@@ -553,7 +551,7 @@ SELECT DISTINCT name FROM ancestor_of LEFT JOIN aliases ON ancestor_of.id = bloc
 pub(crate) fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
     Ok(txn
         .prepare_cached(r#"SELECT id FROM cids JOIN blocks ON id = block_id"#)?
-        .query_map(NO_PARAMS, |row| row.get(0))?
+        .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?)
 }
 
@@ -561,7 +559,7 @@ pub(crate) fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
 pub(crate) fn get_block_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<C>> {
     Ok(txn
         .prepare_cached(r#"SELECT cid FROM cids JOIN blocks ON id = block_id"#)?
-        .query_map(NO_PARAMS, |row| row.get(0))?
+        .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
@@ -569,19 +567,19 @@ pub(crate) fn get_block_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec
 pub(crate) fn get_known_cids<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<C>> {
     Ok(txn
         .prepare_cached(r#"SELECT cid FROM cids"#)?
-        .query_map(NO_PARAMS, |row| row.get(0))?
+        .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<C>>>()?)
 }
 
 pub(crate) fn aliases<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<(Vec<u8>, C)>> {
     Ok(txn
         .prepare_cached(r#"SELECT name, cid FROM aliases JOIN cids ON id = block_id"#)?
-        .query_map(NO_PARAMS, |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<Vec<(Vec<u8>, C)>>>()?)
 }
 
 pub(crate) fn vacuum(conn: &Connection) -> crate::Result<()> {
-    conn.execute("VACUUM;", NO_PARAMS)?;
+    conn.execute("VACUUM;", [])?;
     Ok(())
 }
 
@@ -614,7 +612,7 @@ pub(crate) fn init_db(
 pub(crate) fn integrity_check(conn: &Connection) -> crate::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT integrity_check FROM pragma_integrity_check")?;
     let result = stmt
-        .query_map(NO_PARAMS, |row| row.get(0))?
+        .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(result)
 }

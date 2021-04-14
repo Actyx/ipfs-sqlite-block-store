@@ -2,7 +2,7 @@ use ipfs_sqlite_block_store::{BlockStore, Config, OwnedBlock};
 use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags};
 use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;
@@ -10,9 +10,9 @@ use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 pub fn query_roots(path: &Path) -> anyhow::Result<Vec<(String, Cid)>> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let len: u32 = conn.query_row("SELECT COUNT(1) FROM roots", params![], |row| row.get(0))?;
+    let len: u32 = conn.query_row("SELECT COUNT(1) FROM roots", [], |row| row.get(0))?;
     let mut stmt = conn.prepare("SELECT * FROM roots")?;
-    let roots_iter = stmt.query_map(params![], |row| {
+    let roots_iter = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(2)?))
     })?;
     let mut roots = Vec::with_capacity(len as usize);
@@ -60,11 +60,11 @@ fn main() -> anyhow::Result<()> {
     let mut store = BlockStore::open(output, Config::default())?;
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", params![], |row| row.get(0))?;
+    let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", [], |row| row.get(0))?;
     info!("importing {} blocks", len);
 
     let mut stmt = blocks.prepare("SELECT * FROM blocks")?;
-    let block_iter = stmt.query_map(params![], |row| {
+    let block_iter = stmt.query_map([], |row| {
         Ok(OldBlock {
             key: row.get(0)?,
             //pinned: row.get(1)?,
