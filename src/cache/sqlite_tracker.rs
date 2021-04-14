@@ -1,7 +1,7 @@
 use super::{BlockInfo, CacheTracker};
 use fnv::{FnvHashMap, FnvHashSet};
 use parking_lot::Mutex;
-use rusqlite::{Connection, Transaction, NO_PARAMS};
+use rusqlite::{Connection, Transaction};
 use std::{
     fmt::Debug,
     ops::{Deref, DerefMut},
@@ -59,7 +59,7 @@ fn attempt_ro_txn<T>(
 
 fn set_accessed(txn: &Transaction, id: i64, accessed: i64) -> crate::Result<()> {
     txn.prepare_cached("REPLACE INTO accessed (id, time) VALUES (?, ?)")?
-        .execute(&[id, accessed])?;
+        .execute([id, accessed])?;
     Ok(())
 }
 
@@ -68,7 +68,7 @@ fn get_accessed_bulk(
     result: &mut FnvHashMap<i64, Option<i64>>,
 ) -> crate::Result<()> {
     let mut stmt = txn.prepare_cached("SELECT id, time FROM accessed")?;
-    let accessed = stmt.query_map(NO_PARAMS, |row| {
+    let accessed = stmt.query_map([], |row| {
         let id: i64 = row.get(0)?;
         let time: i64 = row.get(1)?;
         Ok((id, time))
@@ -87,14 +87,14 @@ fn get_accessed_bulk(
 
 fn delete_id(txn: &Transaction, id: i64) -> crate::Result<()> {
     txn.prepare_cached("DELETE FROM accessed WHERE id = ?")?
-        .execute(&[id])?;
+        .execute([id])?;
     Ok(())
 }
 
 fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
     let ids = txn
         .prepare_cached("SELECT id FROM accessed")?
-        .query_map(NO_PARAMS, |row| row.get(0))?
+        .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?;
     Ok(ids)
 }
