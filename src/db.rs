@@ -664,13 +664,3 @@ pub(crate) fn in_txn<T>(
         }
     }
 }
-
-/// execute a statement in a readonly transaction
-/// nested transactions are not allowed here.
-pub(crate) fn in_ro_txn<T>(
-    conn: &Connection,
-    f: impl FnOnce(&Transaction) -> crate::Result<T>,
-) -> crate::Result<T> {
-    let txn = conn.unchecked_transaction()?;
-    f(&txn)
-}
