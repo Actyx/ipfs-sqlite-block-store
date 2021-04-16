@@ -64,6 +64,7 @@ mod db;
 mod error;
 #[cfg(test)]
 mod tests;
+mod transaction;
 
 use crate::cidbytes::CidBytes;
 use cache::{BlockInfo, CacheTracker, NoopCacheTracker, WriteInfo};
@@ -91,6 +92,7 @@ use std::{
     time::Duration,
 };
 use tracing::*;
+use transaction::Transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DbPath {
@@ -172,7 +174,7 @@ impl fmt::Display for Synchronous {
 #[derive(Debug)]
 pub struct Config {
     size_targets: SizeTargets,
-    cache_tracker: Box<dyn CacheTracker>,
+    cache_tracker: Arc<dyn CacheTracker>,
     pragma_synchronous: Synchronous,
     pragma_cache_pages: u64,
     // open in readonly mode
@@ -185,7 +187,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             size_targets: Default::default(),
-            cache_tracker: Box::new(NoopCacheTracker),
+            cache_tracker: Arc::new(NoopCacheTracker),
             pragma_synchronous: Synchronous::Full, // most conservative setting
             pragma_cache_pages: 8192, // 32 megabytes with the default page size of 4096
             read_only: false,
@@ -206,7 +208,7 @@ impl Config {
     }
     /// Set strategy for which non-pinned blocks to keep in case one of the size targets is exceeded.
     pub fn with_cache_tracker<T: CacheTracker + 'static>(mut self, cache_tracker: T) -> Self {
-        self.cache_tracker = Box::new(cache_tracker);
+        self.cache_tracker = Arc::new(cache_tracker);
         self
     }
     pub fn with_pragma_synchronous(mut self, value: Synchronous) -> Self {
@@ -302,7 +304,7 @@ impl<S: StoreParams> Block for libipld::Block<S> {
     }
 }
 
-fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
+pub(crate) fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
     let mut links = Vec::new();
     IpldCodec::try_from(block.cid().codec())?
         .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
@@ -406,6 +408,10 @@ impl BlockStore {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(11), Some(error_text)),
             ))
         }
+    }
+
+    pub fn transaction<'a>(&'a mut self) -> Result<Transaction<'a>> {
+        Transaction::new(self)
     }
 
     /// Get a temporary alias for safely adding blocks to the store

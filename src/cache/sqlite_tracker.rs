@@ -136,7 +136,7 @@ impl SortKey {
 
 impl<F> CacheTracker for SqliteCacheTracker<F>
 where
-    F: Fn(i64, BlockInfo) -> Option<i64> + Send,
+    F: Fn(i64, BlockInfo) -> Option<i64> + Send + Sync,
 {
     #[allow(clippy::needless_collect)]
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
