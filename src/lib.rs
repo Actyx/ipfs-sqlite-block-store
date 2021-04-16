@@ -410,7 +410,7 @@ impl BlockStore {
         }
     }
 
-    pub fn transaction<'a>(&'a mut self) -> Result<Transaction<'a>> {
+    pub fn transaction(&mut self) -> Result<Transaction<'_>> {
         Transaction::new(self)
     }
 
@@ -628,11 +628,15 @@ impl BlockStore {
         min_blocks: usize,
         max_duration: Duration,
     ) -> Result<bool> {
-        log_execution_time("delete_orphaned", Duration::from_millis(100), || {
-            in_txn(&mut self.conn, move |txn| {
-                Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
-            })
-        })
+        log_execution_time(
+            "delete_orphaned",
+            Duration::from_millis(100),
+            || {
+                in_txn(&mut self.conn, move |txn| {
+                    Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
+                })
+            },
+        )
     }
     /// Add a number of blocks to the store
     ///
@@ -652,7 +656,7 @@ impl BlockStore {
         blocks: impl IntoIterator<Item = B>,
         pin: Option<&TempPin>,
     ) -> Result<()> {
-        let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
+        let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));        
         let infos = in_txn(&mut self.conn, |txn| {
             blocks
                 .into_iter()
