@@ -3,7 +3,7 @@ use parking_lot::Mutex;
 use std::{fmt::Debug, sync::Arc};
 
 /// Wrapper around a spawn function
-pub trait Spawner: Send {
+pub trait Spawner: Send + Sync {
     /// Called by the cache tracker to spawn a small, blocking, io bound task
     fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static);
 }
@@ -32,7 +32,7 @@ impl<S: Spawner, T: CacheTracker> AsyncCacheTracker<S, T> {
 impl<S, T> CacheTracker for AsyncCacheTracker<S, T>
 where
     S: Spawner,
-    T: CacheTracker + Send + 'static,
+    T: CacheTracker + 'static,
 {
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         let inner = self.inner.clone();

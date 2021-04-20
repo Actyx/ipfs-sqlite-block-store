@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, Transaction};
 use std::{
     fmt::Debug,
-    ops::{Deref, DerefMut},
+    ops::DerefMut,
     path::Path,
     sync::Arc,
     time::{Instant, SystemTime},
@@ -37,6 +37,16 @@ fn init_db(conn: &mut Connection) -> crate::Result<()> {
     Ok(())
 }
 
+/// execute a statement in a readonly transaction
+/// nested transactions are not allowed here.
+pub(crate) fn in_ro_txn<T>(
+    conn: &mut Connection,
+    f: impl FnOnce(&Transaction) -> crate::Result<T>,
+) -> crate::Result<T> {
+    let txn = conn.transaction()?;
+    f(&txn)
+}
+
 fn attempt_txn<T>(
     mut conn: impl DerefMut<Target = Connection>,
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
@@ -48,10 +58,10 @@ fn attempt_txn<T>(
 }
 
 fn attempt_ro_txn<T>(
-    conn: impl Deref<Target = Connection>,
+    mut conn: impl DerefMut<Target = Connection>,
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
 ) {
-    let result = crate::in_ro_txn(&conn, f);
+    let result = in_ro_txn(&mut conn, f);
     if let Err(cause) = result {
         tracing::warn!("Unable to execute readonly transaction {}", cause);
     }
@@ -136,7 +146,7 @@ impl SortKey {
 
 impl<F> CacheTracker for SqliteCacheTracker<F>
 where
-    F: Fn(i64, BlockInfo) -> Option<i64> + Send,
+    F: Fn(i64, BlockInfo) -> Option<i64> + Send + Sync,
 {
     #[allow(clippy::needless_collect)]
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {

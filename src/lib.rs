@@ -64,24 +64,19 @@ mod db;
 mod error;
 #[cfg(test)]
 mod tests;
+mod transaction;
 
-use crate::cidbytes::CidBytes;
-use cache::{BlockInfo, CacheTracker, NoopCacheTracker, WriteInfo};
+use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
-use fnv::FnvHashSet;
-use libipld::{
-    cid::{self, Cid},
-    codec::Codec,
-    store::StoreParams,
-    Ipld, IpldCodec,
-};
+use libipld::{cid::Cid, codec::Codec, store::StoreParams, Ipld, IpldCodec};
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
     convert::TryFrom,
     fmt,
     iter::FromIterator,
+    mem,
     ops::DerefMut,
     path::{Path, PathBuf},
     sync::{
@@ -91,6 +86,7 @@ use std::{
     time::Duration,
 };
 use tracing::*;
+use transaction::Transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DbPath {
@@ -172,7 +168,7 @@ impl fmt::Display for Synchronous {
 #[derive(Debug)]
 pub struct Config {
     size_targets: SizeTargets,
-    cache_tracker: Box<dyn CacheTracker>,
+    cache_tracker: Arc<dyn CacheTracker>,
     pragma_synchronous: Synchronous,
     pragma_cache_pages: u64,
     // open in readonly mode
@@ -185,7 +181,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             size_targets: Default::default(),
-            cache_tracker: Box::new(NoopCacheTracker),
+            cache_tracker: Arc::new(NoopCacheTracker),
             pragma_synchronous: Synchronous::Full, // most conservative setting
             pragma_cache_pages: 8192, // 32 megabytes with the default page size of 4096
             read_only: false,
@@ -206,7 +202,7 @@ impl Config {
     }
     /// Set strategy for which non-pinned blocks to keep in case one of the size targets is exceeded.
     pub fn with_cache_tracker<T: CacheTracker + 'static>(mut self, cache_tracker: T) -> Self {
-        self.cache_tracker = Box::new(cache_tracker);
+        self.cache_tracker = Arc::new(cache_tracker);
         self
     }
     pub fn with_pragma_synchronous(mut self, value: Synchronous) -> Self {
@@ -302,7 +298,7 @@ impl<S: StoreParams> Block for libipld::Block<S> {
     }
 }
 
-fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
+pub(crate) fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
     let mut links = Vec::new();
     IpldCodec::try_from(block.cid().codec())?
         .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
@@ -408,6 +404,10 @@ impl BlockStore {
         }
     }
 
+    pub fn transaction(&mut self) -> Result<Transaction<'_>> {
+        Transaction::new(self)
+    }
+
     /// Get a temporary alias for safely adding blocks to the store
     pub fn temp_pin(&self) -> TempPin {
         TempPin {
@@ -418,16 +418,14 @@ impl BlockStore {
 
     /// Add a permanent named alias/pin for a root
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> crate::Result<()> {
-        self.alias_many(std::iter::once((name, link.cloned())))
+        let txn = self.transaction()?;
+        txn.alias(name, link)?;
+        txn.commit()
     }
 
     /// Resolves an alias to a cid.
-    pub fn resolve(&self, name: impl AsRef<[u8]>) -> crate::Result<Option<Cid>> {
-        in_ro_txn(&self.conn, |txn| {
-            Ok(resolve::<CidBytes>(txn, name.as_ref())?
-                .map(|c| Cid::try_from(&c))
-                .transpose()?)
-        })
+    pub fn resolve(&mut self, name: impl AsRef<[u8]>) -> crate::Result<Option<Cid>> {
+        self.transaction()?.resolve(name)
     }
 
     /// Add multiple permanent named aliases
@@ -435,13 +433,11 @@ impl BlockStore {
         &mut self,
         aliases: impl IntoIterator<Item = (impl AsRef<[u8]>, Option<Cid>)>,
     ) -> crate::Result<()> {
-        in_txn(&mut self.conn, |txn| {
-            for (name, link) in aliases.into_iter() {
-                let link: Option<CidBytes> = link.map(|x| CidBytes::try_from(&x)).transpose()?;
-                alias(txn, name.as_ref(), link.as_ref())?;
-            }
-            Ok(())
-        })
+        let txn = self.transaction()?;
+        for (name, link) in aliases.into_iter() {
+            txn.alias(name.as_ref(), link.as_ref())?;
+        }
+        txn.commit()
     }
 
     pub fn extend_temp_pin(
@@ -449,108 +445,126 @@ impl BlockStore {
         pin: &TempPin,
         links: impl IntoIterator<Item = Cid>,
     ) -> crate::Result<()> {
-        let pin0 = pin.id.load(Ordering::SeqCst);
-        let pin0 = in_txn(&mut self.conn, |txn| {
-            let links = links
-                .into_iter()
-                .map(|x| CidBytes::try_from(&x))
-                .collect::<std::result::Result<Vec<_>, cid::Error>>()?;
-            extend_temp_pin(txn, pin0, links)
-        })?;
-        pin.id.store(pin0, Ordering::SeqCst);
-        Ok(())
+        let txn = self.transaction()?;
+        for link in links {
+            txn.extend_temp_pin(pin, &link)?;
+        }
+        txn.commit()
     }
 
     /// Returns the aliases referencing a block.
-    pub fn reverse_alias(&self, cid: &Cid) -> crate::Result<Option<Vec<Vec<u8>>>> {
-        let cid = CidBytes::try_from(cid)?;
-        in_ro_txn(&self.conn, |txn| reverse_alias(txn, cid.as_ref()))
+    pub fn reverse_alias(&mut self, cid: &Cid) -> crate::Result<Option<Vec<Vec<u8>>>> {
+        self.transaction()?.reverse_alias(cid)
     }
 
     /// Checks if the store knows about the cid.
     /// Note that this does not necessarily mean that the store has the data for the cid.
-    pub fn has_cid(&self, cid: &Cid) -> Result<bool> {
-        let cid = CidBytes::try_from(cid)?;
-        in_ro_txn(&self.conn, |txn| has_cid(txn, cid))
+    pub fn has_cid(&mut self, cid: &Cid) -> Result<bool> {
+        self.transaction()?.has_cid(cid)
     }
 
     /// Checks if the store has the data for a cid
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
-        let cid = CidBytes::try_from(cid)?;
-        in_ro_txn(&self.conn, |txn| has_block(txn, cid))
+        self.transaction()?.has_block(cid)
     }
 
     /// Look up multiple blocks in one read transaction
-    pub fn has_blocks<I, O>(&self, cids: I) -> Result<O>
+    pub fn has_blocks<I, O>(&mut self, cids: I) -> Result<O>
     where
         I: IntoIterator<Item = Cid>,
         O: FromIterator<(Cid, bool)>,
     {
-        in_ro_txn(&self.conn, |txn| {
-            cids.into_iter()
-                .map(|cid| -> Result<(Cid, bool)> {
-                    Ok((cid, has_block(txn, CidBytes::try_from(&cid)?)?))
-                })
-                .collect::<crate::Result<O>>()
-        })
+        let txn = self.transaction()?;
+        cids.into_iter()
+            .map(|cid| txn.has_cid(&cid).map(|res| (cid, res)))
+            .collect::<crate::Result<O>>()
     }
 
     /// Get the stats for the store.
     ///
     /// The stats are kept up to date, so this is fast.
-    pub fn get_store_stats(&self) -> Result<StoreStats> {
-        in_ro_txn(&self.conn, get_store_stats)
+    pub fn get_store_stats(&mut self) -> Result<StoreStats> {
+        self.transaction()?.get_store_stats()
     }
 
     /// Get all cids that the store knows about
     pub fn get_known_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
-        let res = in_ro_txn(&self.conn, |txn| get_known_cids::<CidBytes>(txn))?;
-        let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
-        Ok(res)
+        self.transaction()?.get_known_cids()
     }
 
     /// Get all cids for which the store has blocks
-    pub fn get_block_cids<C: FromIterator<Cid>>(&self) -> Result<C> {
-        let res = in_ro_txn(&self.conn, |txn| get_block_cids::<CidBytes>(txn))?;
-        let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
-        Ok(res)
+    pub fn get_block_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
+        self.transaction()?.get_block_cids()
     }
 
     /// Get descendants of a cid
-    pub fn get_descendants<C: FromIterator<Cid>>(&self, cid: &Cid) -> Result<C> {
-        let cid = CidBytes::try_from(cid)?;
-        let res = in_ro_txn(&self.conn, move |txn| get_descendants(txn, cid))?;
-        let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
-        Ok(res)
+    pub fn get_descendants<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
+        self.transaction()?.get_descendants(cid)
     }
 
     /// Given a root of a dag, gives all cids which we do not have data for.
-    pub fn get_missing_blocks<C: FromIterator<Cid>>(&self, cid: &Cid) -> Result<C> {
-        let cid = CidBytes::try_from(cid)?;
-        let result = log_execution_time("get_missing_blocks", Duration::from_millis(10), || {
-            in_ro_txn(&self.conn, move |txn| get_missing_blocks(txn, cid))
-        })?;
-        let res = result
-            .iter()
-            .map(Cid::try_from)
-            .collect::<cid::Result<C>>()?;
-        Ok(res)
+    pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
+        self.transaction()?.get_missing_blocks(cid)
     }
 
     /// list all aliases
-    pub fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&self) -> Result<C> {
-        let result: Vec<(Vec<u8>, CidBytes)> = in_ro_txn(&self.conn, aliases)?;
-        let res = result
-            .into_iter()
-            .map(|(alias, cid)| {
-                let cid = Cid::try_from(&cid)?;
-                Ok((alias, cid))
-            })
-            .collect::<cid::Result<C>>()?;
-        Ok(res)
+    pub fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&mut self) -> Result<C> {
+        self.transaction()?.aliases()
     }
 
-    pub fn vacuum(&self) -> Result<()> {
+    /// Add a number of blocks to the store
+    ///
+    /// - `blocks` the blocks to add.
+    /// - `alias` an optional temporary alias.
+    ///   This can be used to incrementally add blocks without having to worry about them being garbage
+    ///   collected before they can be pinned with a permanent alias.
+    pub fn put_blocks<B: Block>(
+        &mut self,
+        blocks: impl IntoIterator<Item = B>,
+        pin: Option<&TempPin>,
+    ) -> Result<()> {
+        let txn = self.transaction()?;
+        for block in blocks {
+            txn.put_block(block, pin)?;
+        }
+        txn.commit()
+    }
+    /// Add a single block
+    ///
+    /// this is just a convenience method that calls put_blocks internally.
+    ///
+    /// - `cid` the cid
+    ///   This should be a hash of the data, with some format specifier.
+    /// - `data` a blob
+    /// - `links` links extracted from the data
+    /// - `alias` an optional temporary alias
+    pub fn put_block(&mut self, block: &impl Block, pin: Option<&TempPin>) -> Result<()> {
+        let txn = self.transaction()?;
+        txn.put_block(block, pin)?;
+        txn.commit()
+    }
+
+    /// Get multiple blocks in a single read transaction
+    pub fn get_blocks<I>(&mut self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
+    where
+        I: IntoIterator<Item = Cid>,
+    {
+        let txn = self.transaction()?;
+        let res = cids
+            .into_iter()
+            .map(|cid| txn.get_block(&cid).map(|res| (cid, res)))
+            .collect::<crate::Result<Vec<_>>>()?;
+        Ok(res.into_iter())
+    }
+
+    /// Get data for a block
+    ///
+    /// Will return None if we don't have the data
+    pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
+        self.transaction()?.get_block(cid)
+    }
+
+    pub fn vacuum(&mut self) -> Result<()> {
         vacuum(&self.conn)
     }
 
@@ -586,7 +600,7 @@ impl BlockStore {
         // atomically grab the expired_temp_pins until now
         let expired_temp_pins = {
             let mut result = Vec::new();
-            std::mem::swap(self.expired_temp_pins.lock().deref_mut(), &mut result);
+            mem::swap(self.expired_temp_pins.lock().deref_mut(), &mut result);
             result
         };
         let (deleted, complete) = log_execution_time("gc", Duration::from_secs(1), || {
@@ -627,89 +641,6 @@ impl BlockStore {
                 Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
             })
         })
-    }
-    /// Add a number of blocks to the store
-    ///
-    /// It is up to the caller to extract links from blocks. Also, the store does not know
-    /// anything about content-addressing and will not validate that the cid of a block is the
-    /// actual hash of the content.
-    ///
-    /// - `blocks` the blocks to add.
-    ///   Even we already have these blocks, the alias will be set. However, it will not be checked
-    ///   that the links or data are the same as last time the block was added. That is responsibility
-    ///   of the caller.
-    /// - `alias` an optional temporary alias.
-    ///   This can be used to incrementally add blocks without having to worry about them being garbage
-    ///   collected before they can be pinned with a permanent alias.
-    pub fn put_blocks<B: Block>(
-        &mut self,
-        blocks: impl IntoIterator<Item = B>,
-        pin: Option<&TempPin>,
-    ) -> Result<()> {
-        let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
-        let infos = in_txn(&mut self.conn, |txn| {
-            blocks
-                .into_iter()
-                .map(|block| {
-                    let cid_bytes = CidBytes::try_from(block.cid())?;
-                    let links = links(&block)?
-                        .iter()
-                        .map(CidBytes::try_from)
-                        .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
-                    let res = put_block(txn, &cid_bytes, &block.data(), links, &mut pin0)?;
-                    Ok(WriteInfo::new(
-                        BlockInfo::new(res.id, block.cid(), block.data().len()),
-                        res.block_exists,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()
-        })?;
-        if let (Some(pin), Some(p)) = (pin, pin0) {
-            pin.id.store(p, Ordering::SeqCst);
-        }
-        self.config.cache_tracker.blocks_written(infos);
-        Ok(())
-    }
-    /// Add a single block
-    ///
-    /// this is just a convenience method that calls put_blocks internally.
-    ///
-    /// - `cid` the cid
-    ///   This should be a hash of the data, with some format specifier.
-    /// - `data` a blob
-    /// - `links` links extracted from the data
-    /// - `alias` an optional temporary alias
-    pub fn put_block(&mut self, block: &impl Block, alias: Option<&TempPin>) -> Result<()> {
-        self.put_blocks(Some(&block), alias)?;
-        Ok(())
-    }
-    /// Get multiple blocks in a single read transaction
-    pub fn get_blocks<I>(&self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
-    where
-        I: IntoIterator<Item = Cid>,
-    {
-        let res = in_ro_txn(&self.conn, |txn| {
-            cids.into_iter()
-                .map(|cid| Ok((cid, get_block(txn, &CidBytes::try_from(&cid)?)?)))
-                .collect::<crate::Result<Vec<_>>>()
-        })?;
-        let infos = res
-            .iter()
-            .filter_map(|(cid, res)| {
-                res.as_ref()
-                    .map(|(id, data)| BlockInfo::new(*id, cid, data.len()))
-            })
-            .collect::<Vec<_>>();
-        self.config.cache_tracker.blocks_accessed(infos);
-        Ok(res
-            .into_iter()
-            .map(|(cid, res)| (cid, res.map(|(_, data)| data))))
-    }
-    /// Get data for a block
-    ///
-    /// Will return None if we don't have the data
-    pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
-        Ok(self.get_blocks(std::iter::once(*cid))?.next().unwrap().1)
     }
 
     /// the underlying rusqlite connection

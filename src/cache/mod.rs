@@ -73,7 +73,7 @@ impl Deref for WriteInfo {
 
 /// tracks block reads and writes to provide info about which blocks to evict from the LRU cache
 #[allow(unused_variables)]
-pub trait CacheTracker: Debug + Send {
+pub trait CacheTracker: Debug + Send + Sync {
     /// called whenever blocks were accessed
     ///
     /// note that this method will be called very frequently, on every block access.
@@ -100,7 +100,7 @@ pub trait CacheTracker: Debug + Send {
     fn retain_ids(&self, ids: &[i64]) {}
 }
 
-impl CacheTracker for Box<dyn CacheTracker> {
+impl CacheTracker for Arc<dyn CacheTracker> {
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {
         self.as_ref().blocks_accessed(blocks)
     }
@@ -190,8 +190,8 @@ fn get_key<T: Ord + Clone>(
 
 impl<T, F> CacheTracker for InMemCacheTracker<T, F>
 where
-    T: Ord + Clone + Debug + Send,
-    F: Fn(Duration, BlockInfo) -> Option<T> + Send,
+    T: Ord + Clone + Debug + Send + Sync,
+    F: Fn(Duration, BlockInfo) -> Option<T> + Send + Sync,
 {
     /// called whenever blocks were accessed
     fn blocks_accessed(&self, blocks: Vec<BlockInfo>) {

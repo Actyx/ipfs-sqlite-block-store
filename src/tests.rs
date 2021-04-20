@@ -347,7 +347,7 @@ fn test_migration() -> anyhow::Result<()> {
             .execute(params![cid.to_string(), cid.to_bytes(), data])?;
         blocks.push((cid, data));
     }
-    let store = BlockStore::open(path, Config::default())?;
+    let mut store = BlockStore::open(path, Config::default())?;
     for (cid, data) in blocks {
         assert_eq!(store.get_block(&cid)?, Some(data));
     }
@@ -389,7 +389,7 @@ fn test_reverse_alias() -> anyhow::Result<()> {
 
 #[test]
 fn test_vacuum() -> anyhow::Result<()> {
-    let store = BlockStore::memory(Config::default())?;
+    let mut store = BlockStore::memory(Config::default())?;
     store.vacuum()?;
     Ok(())
 }
@@ -459,7 +459,7 @@ fn shared_file() -> anyhow::Result<()> {
     let tmp = TempDir::new("shared_file")?;
     let path = tmp.path().join("test.sqlite");
     let mut db1 = BlockStore::open_path(DbPath::File(path.clone()), Config::default())?;
-    let db2 = BlockStore::open_path(DbPath::File(path), Config::default())?;
+    let mut db2 = BlockStore::open_path(DbPath::File(path), Config::default())?;
 
     for i in 0..10 {
         let block = block(&format!("block-{}", i));
