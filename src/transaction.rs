@@ -2,10 +2,10 @@ use crate::{
     cache::{BlockInfo, CacheTracker, WriteInfo},
     cidbytes::CidBytes,
     db::*,
-    links, Block, BlockStore, Result, StoreStats, TempPin,
+    Block, BlockStore, Result, StoreStats, TempPin,
 };
 use fnv::FnvHashSet;
-use libipld::{cid, Cid};
+use libipld::{cid, codec::References, store::StoreParams, Cid, Ipld};
 use parking_lot::Mutex;
 use std::{
     convert::TryFrom,
@@ -47,7 +47,11 @@ impl Drop for TransactionInfo {
     }
 }
 
-impl<'a, S> Transaction<'a, S> {
+impl<'a, S> Transaction<'a, S>
+where
+    S: StoreParams,
+    Ipld: References<S::Codecs>,
+{
     pub(crate) fn new(owner: &'a mut BlockStore<S>) -> Result<Self> {
         Ok(Self {
             inner: owner.conn.transaction()?,
@@ -166,12 +170,14 @@ impl<'a, S> Transaction<'a, S> {
     }
 
     /// Put a block. This will only be completed once the transaction is successfully committed
-    pub fn put_block<B: Block<S>>(&self, block: B, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block(&self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
         let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let cid_bytes = CidBytes::try_from(block.cid())?;
-        let links = links(&block)?
-            .iter()
-            .map(CidBytes::try_from)
+        let mut links = Vec::new();
+        block.references(&mut links)?;
+        let links = links
+            .into_iter()
+            .map(|x| CidBytes::try_from(&x))
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
         let res = put_block(self.txn(), &cid_bytes, &block.data(), links, &mut pin0)?;
         let write_info = WriteInfo::new(

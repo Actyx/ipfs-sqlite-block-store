@@ -31,18 +31,6 @@ pub struct OldBlock {
     data: Vec<u8>,
 }
 
-pub struct IpldBlock(libipld::Block<DefaultParams>);
-
-impl ipfs_sqlite_block_store::Block<DefaultParams> for IpldBlock {
-    fn cid(&self) -> &Cid {
-        self.0.cid()
-    }
-
-    fn data(&self) -> &[u8] {
-        self.0.data()
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)

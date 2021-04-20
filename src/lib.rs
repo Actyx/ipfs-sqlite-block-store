@@ -69,11 +69,10 @@ mod transaction;
 use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
-use libipld::{cid::Cid, codec::Codec, store::StoreParams, Ipld, IpldCodec};
+use libipld::{cid::Cid, codec::References, store::StoreParams, Block, Ipld};
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
-    convert::TryFrom,
     fmt,
     iter::FromIterator,
     marker::PhantomData,
@@ -274,40 +273,11 @@ impl Drop for TempPin {
     }
 }
 
-/// An ipfs block
-pub trait Block<S> {
-    fn cid(&self) -> &Cid;
-    fn data(&self) -> &[u8];
-}
-
-impl<S, B: Block<S>> Block<S> for &B {
-    fn cid(&self) -> &Cid {
-        (*self).cid()
-    }
-
-    fn data(&self) -> &[u8] {
-        (*self).data()
-    }
-}
-
-impl<S: StoreParams> Block<S> for libipld::Block<S> {
-    fn cid(&self) -> &Cid {
-        libipld::Block::cid(&self)
-    }
-
-    fn data(&self) -> &[u8] {
-        libipld::Block::data(&self)
-    }
-}
-
-pub(crate) fn links<S>(block: &impl Block<S>) -> anyhow::Result<Vec<Cid>> {
-    let mut links = Vec::new();
-    IpldCodec::try_from(block.cid().codec())?
-        .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
-    Ok(links)
-}
-
-impl<S: StoreParams> BlockStore<S> {
+impl<S> BlockStore<S>
+where
+    S: StoreParams,
+    Ipld: References<S::Codecs>,
+{
     fn create_connection(db_path: DbPath, config: &Config) -> crate::Result<rusqlite::Connection> {
         let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         flags |= if config.read_only {
@@ -522,14 +492,14 @@ impl<S: StoreParams> BlockStore<S> {
     /// - `alias` an optional temporary alias.
     ///   This can be used to incrementally add blocks without having to worry about them being garbage
     ///   collected before they can be pinned with a permanent alias.
-    pub fn put_blocks<B: Block<S>>(
+    pub fn put_blocks(
         &mut self,
-        blocks: impl IntoIterator<Item = B>,
+        blocks: impl IntoIterator<Item = Block<S>>,
         pin: Option<&TempPin>,
     ) -> Result<()> {
         let txn = self.transaction()?;
         for block in blocks {
-            txn.put_block(block, pin)?;
+            txn.put_block(&block, pin)?;
         }
         txn.commit()
     }
@@ -542,7 +512,7 @@ impl<S: StoreParams> BlockStore<S> {
     /// - `data` a blob
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
-    pub fn put_block(&mut self, block: &impl Block<S>, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block(&mut self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
         let txn = self.transaction()?;
         txn.put_block(block, pin)?;
         txn.commit()
