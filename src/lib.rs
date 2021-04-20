@@ -539,9 +539,8 @@ impl BlockStore {
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
     pub fn put_block(&mut self, block: &impl Block, pin: Option<&TempPin>) -> Result<()> {
-        let bb = BorrowedBlock::new(*block.cid(), block.data());
         let txn = self.transaction()?;
-        txn.put_block(bb, pin)?;
+        txn.put_block(block, pin)?;
         txn.commit()
     }
 
