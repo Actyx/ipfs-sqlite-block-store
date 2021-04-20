@@ -176,8 +176,8 @@ where
         let mut links = Vec::new();
         block.references(&mut links)?;
         let links = links
-            .into_iter()
-            .map(|x| CidBytes::try_from(&x))
+            .iter()
+            .map(CidBytes::try_from)
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
         let res = put_block(self.txn(), &cid_bytes, &block.data(), links, &mut pin0)?;
         let write_info = WriteInfo::new(
