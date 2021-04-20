@@ -96,7 +96,7 @@ fn main() -> anyhow::Result<()> {
         .with_span_events(FmtSpan::CLOSE)
         .with_env_filter(EnvFilter::from_default_env())
         .init();
-    let mut store = BlockStore::open("test.sqlite", Config::default())?;
+    let mut store = BlockStore::<libipld::DefaultParams>::open("test.sqlite", Config::default())?;
     for i in 0..10 {
         println!("Adding filler tree {}", i);
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;

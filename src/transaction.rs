@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use std::{
     convert::TryFrom,
     iter::FromIterator,
+    marker::PhantomData,
     mem,
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -18,10 +19,11 @@ use std::{
     time::Duration,
 };
 
-pub struct Transaction<'a> {
+pub struct Transaction<'a, S> {
     inner: rusqlite::Transaction<'a>,
     info: Mutex<TransactionInfo>,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
+    _s: PhantomData<S>,
 }
 
 struct TransactionInfo {
@@ -45,8 +47,8 @@ impl Drop for TransactionInfo {
     }
 }
 
-impl<'a> Transaction<'a> {
-    pub(crate) fn new(owner: &'a mut BlockStore) -> Result<Self> {
+impl<'a, S> Transaction<'a, S> {
+    pub(crate) fn new(owner: &'a mut BlockStore<S>) -> Result<Self> {
         Ok(Self {
             inner: owner.conn.transaction()?,
             info: Mutex::new(TransactionInfo {
@@ -56,6 +58,7 @@ impl<'a> Transaction<'a> {
                 tracker: owner.config.cache_tracker.clone(),
             }),
             expired_temp_pins: owner.expired_temp_pins.clone(),
+            _s: PhantomData,
         })
     }
 

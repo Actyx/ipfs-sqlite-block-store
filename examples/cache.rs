@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     let tracker = AsyncCacheTracker::new(TokioSpawner, tracker);
     // let tracker = InMemCacheTracker::new(|access, _, _| Some(access));
     // let tracker = NoopCacheTracker;
-    let mut store = BlockStore::open(
+    let mut store = BlockStore::<libipld::DefaultParams>::open(
         "cache-test.sqlite",
         Config::default()
             .with_size_targets(SizeTargets::new(1000, 1000000))

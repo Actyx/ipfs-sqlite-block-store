@@ -76,6 +76,7 @@ use std::{
     convert::TryFrom,
     fmt,
     iter::FromIterator,
+    marker::PhantomData,
     mem,
     ops::DerefMut,
     path::{Path, PathBuf},
@@ -215,10 +216,11 @@ impl Config {
     }
 }
 
-pub struct BlockStore {
+pub struct BlockStore<S> {
     conn: Connection,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
+    _s: PhantomData<S>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -305,7 +307,7 @@ pub(crate) fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
     Ok(links)
 }
 
-impl BlockStore {
+impl<S: StoreParams> BlockStore<S> {
     fn create_connection(db_path: DbPath, config: &Config) -> crate::Result<rusqlite::Connection> {
         let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         flags |= if config.read_only {
@@ -338,6 +340,7 @@ impl BlockStore {
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
+            _s: PhantomData,
         })
     }
 
@@ -383,6 +386,7 @@ impl BlockStore {
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
+            _s: PhantomData,
         })
     }
 
@@ -404,7 +408,7 @@ impl BlockStore {
         }
     }
 
-    pub fn transaction(&mut self) -> Result<Transaction<'_>> {
+    pub fn transaction(&mut self) -> Result<Transaction<'_, S>> {
         Transaction::new(self)
     }
 
