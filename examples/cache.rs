@@ -1,6 +1,6 @@
 use ipfs_sqlite_block_store::{
     cache::{AsyncCacheTracker, Spawner, SqliteCacheTracker},
-    Block, BlockStore, Config, OwnedBlock, SizeTargets,
+    BlockStore, Config, SizeTargets,
 };
 use itertools::*;
 use libipld::{cbor::DagCborCodec, codec::Codec, Cid, DagCbor};
@@ -8,6 +8,8 @@ use multihash::{Code, MultihashDigest};
 use std::time::Instant;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+
+type Block = libipld::Block<libipld::DefaultParams>;
 
 #[derive(Debug, DagCbor)]
 struct Node {
@@ -25,7 +27,7 @@ impl Node {
 }
 
 /// creates a block with a min size
-fn sized(name: &str, min_size: usize) -> OwnedBlock {
+fn sized(name: &str, min_size: usize) -> Block {
     let mut text = name.to_string();
     while text.len() < min_size {
         text += " ";
@@ -34,11 +36,11 @@ fn sized(name: &str, min_size: usize) -> OwnedBlock {
     let bytes = DagCborCodec.encode(&ipld).unwrap();
     let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+    Block::new_unchecked(Cid::new_v1(0x71, hash), bytes)
 }
 
 /// creates a block with the name "unpinned-<i>" and a size of 1000
-fn unpinned(i: usize) -> OwnedBlock {
+fn unpinned(i: usize) -> Block {
     sized(&format!("{}", i), 10000 - 16)
 }
 

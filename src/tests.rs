@@ -3,7 +3,7 @@ use crate::{
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
-    Block, BlockStore, Config, DbPath, OwnedBlock, SizeTargets,
+    BlockStore, Config, DbPath, SizeTargets,
 };
 use fnv::FnvHashSet;
 use libipld::{
@@ -15,6 +15,8 @@ use libipld::{prelude::*, DagCbor};
 use rusqlite::{params, Connection};
 use std::time::Duration;
 use tempdir::TempDir;
+
+type Block = libipld::Block<libipld::DefaultParams>;
 
 #[derive(Debug, DagCbor)]
 struct Node {
@@ -56,25 +58,25 @@ impl From<usize> for SizeOrLinks {
 }
 
 /// creates a simple leaf block
-fn block(name: &str) -> OwnedBlock {
+fn block(name: &str) -> Block {
     let ipld = Node::leaf(name);
     let bytes = DagCborCodec.encode(&ipld).unwrap();
     let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+    Block::new_unchecked(Cid::new_v1(0x71, hash), bytes)
 }
 
 /// creates a block with some links
-fn links(name: &str, children: Vec<&OwnedBlock>) -> OwnedBlock {
+fn links(name: &str, children: Vec<&Block>) -> Block {
     let ipld = Node::branch(name, children.iter().map(|b| *b.cid()).collect::<Vec<_>>());
     let bytes = DagCborCodec.encode(&ipld).unwrap();
     let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+    Block::new_unchecked(Cid::new_v1(0x71, hash), bytes)
 }
 
 /// creates a block with a min size
-fn sized(name: &str, min_size: usize) -> OwnedBlock {
+fn sized(name: &str, min_size: usize) -> Block {
     let mut text = name.to_string();
     while text.len() < min_size {
         text += " ";
@@ -83,7 +85,7 @@ fn sized(name: &str, min_size: usize) -> OwnedBlock {
     let bytes = DagCborCodec.encode(&ipld).unwrap();
     let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+    Block::new_unchecked(Cid::new_v1(0x71, hash), bytes)
 }
 
 /*fn pb(name: &str) -> Cid {
@@ -93,12 +95,12 @@ fn sized(name: &str, min_size: usize) -> OwnedBlock {
 }*/
 
 /// creates a block with the name "unpinned-<i>" and a size of 1000
-fn unpinned(i: usize) -> OwnedBlock {
+fn unpinned(i: usize) -> Block {
     sized(&format!("{}", i), 1000 - 16)
 }
 
 /// creates a block with the name "pinned-<i>" and a size of 1000
-fn pinned(i: usize) -> OwnedBlock {
+fn pinned(i: usize) -> Block {
     sized(&format!("pinned-{}", i), 1000 - 16)
 }
 

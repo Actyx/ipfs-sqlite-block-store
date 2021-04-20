@@ -1,4 +1,4 @@
-use ipfs_sqlite_block_store::{BlockStore, Config, OwnedBlock};
+use ipfs_sqlite_block_store::{BlockStore, Config};
 use itertools::*;
 use libipld::cid::Cid;
 use libipld::store::DefaultParams;
@@ -7,6 +7,7 @@ use std::convert::TryFrom;
 use std::path::Path;
 use tracing::*;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+type Block = libipld::Block<libipld::DefaultParams>;
 
 pub fn query_roots(path: &Path) -> anyhow::Result<Vec<(String, Cid)>> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -81,7 +82,7 @@ fn main() -> anyhow::Result<()> {
             //println!("{} {} {}", cid, block.pinned, block.data.len());
             let block = libipld::Block::<DefaultParams>::new(cid, block.data)?;
             let (cid, data) = block.into_inner();
-            Ok(OwnedBlock::new(cid, data))
+            Block::new(cid, data)
         })
     });
 
