@@ -1,9 +1,11 @@
 use std::time::Instant;
 
-use ipfs_sqlite_block_store::{Block, BlockStore, Config, OwnedBlock};
+use ipfs_sqlite_block_store::{BlockStore, Config};
 use libipld::{cbor::DagCborCodec, cid::Cid, codec::Codec, DagCbor};
 use multihash::{Code, MultihashDigest};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+
+type Block = libipld::Block<libipld::DefaultParams>;
 
 #[derive(Debug, DagCbor)]
 struct Node {
@@ -22,7 +24,7 @@ impl Node {
 
 /// creates a block
 /// leaf blocks will be larger than branch blocks
-fn block(name: &str, links: impl IntoIterator<Item = Cid>) -> OwnedBlock {
+fn block(name: &str, links: impl IntoIterator<Item = Cid>) -> Block {
     let links = links.into_iter().collect::<Vec<_>>();
     let data_size = if links.is_empty() {
         1024 * 16 - 16
@@ -37,7 +39,7 @@ fn block(name: &str, links: impl IntoIterator<Item = Cid>) -> OwnedBlock {
     let bytes = DagCborCodec.encode(&ipld).unwrap();
     let hash = Code::Sha2_256.digest(&bytes);
     // https://github.com/multiformats/multicodec/blob/master/table.csv
-    OwnedBlock::new(Cid::new_v1(0x71, hash), bytes)
+    Block::new_unchecked(Cid::new_v1(0x71, hash), bytes)
 }
 
 fn fmt_cid(cid: Cid) -> String {
@@ -52,7 +54,7 @@ fn build_tree_0(
     prefix: &str,
     branch: u64,
     depth: u64,
-    blocks: &mut Vec<OwnedBlock>,
+    blocks: &mut Vec<Block>,
 ) -> anyhow::Result<Cid> {
     let children = if depth == 0 {
         Vec::new()
@@ -70,13 +72,13 @@ fn build_tree_0(
     Ok(cid)
 }
 
-fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Cid, Vec<OwnedBlock>)> {
+fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Cid, Vec<Block>)> {
     let mut tmp = Vec::new();
     let res = build_tree_0(prefix, branch, depth, &mut tmp)?;
     Ok((res, tmp))
 }
 
-fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<OwnedBlock>)> {
+fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<Block>)> {
     anyhow::ensure!(n > 0);
     let mut blocks = Vec::with_capacity(n);
     let mk_node = |i: usize, links| block(&format!("{}-{}", prefix, i), links);

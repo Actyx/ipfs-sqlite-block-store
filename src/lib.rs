@@ -282,6 +282,16 @@ pub trait Block {
     fn data(&self) -> &[u8];
 }
 
+impl<B: Block> Block for &B {
+    fn cid(&self) -> &Cid {
+        (*self).cid()
+    }
+
+    fn data(&self) -> &[u8] {
+        (*self).data()
+    }
+}
+
 impl<S: StoreParams> Block for libipld::Block<S> {
     fn cid(&self) -> &Cid {
         libipld::Block::cid(&self)
@@ -289,53 +299,6 @@ impl<S: StoreParams> Block for libipld::Block<S> {
 
     fn data(&self) -> &[u8] {
         libipld::Block::data(&self)
-    }
-}
-
-/// Block that owns its data
-#[derive(Debug, Clone)]
-pub struct OwnedBlock {
-    cid: Cid,
-    data: Box<[u8]>,
-}
-
-impl OwnedBlock {
-    pub fn new(cid: Cid, data: impl Into<Box<[u8]>>) -> Self {
-        Self {
-            cid,
-            data: data.into(),
-        }
-    }
-}
-
-impl Block for OwnedBlock {
-    fn cid(&self) -> &Cid {
-        &self.cid
-    }
-
-    fn data(&self) -> &[u8] {
-        &self.data
-    }
-}
-
-struct BorrowedBlock<'a> {
-    cid: Cid,
-    data: &'a [u8],
-}
-
-impl<'a> BorrowedBlock<'a> {
-    fn new(cid: Cid, data: &'a [u8]) -> Self {
-        Self { cid, data }
-    }
-}
-
-impl<'a> Block for BorrowedBlock<'a> {
-    fn cid(&self) -> &Cid {
-        &self.cid
-    }
-
-    fn data(&self) -> &[u8] {
-        self.data
     }
 }
 
@@ -717,8 +680,7 @@ impl BlockStore {
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
     pub fn put_block(&mut self, block: &impl Block, alias: Option<&TempPin>) -> Result<()> {
-        let bb = BorrowedBlock::new(*block.cid(), block.data());
-        self.put_blocks(Some(bb), alias)?;
+        self.put_blocks(Some(&block), alias)?;
         Ok(())
     }
     /// Get multiple blocks in a single read transaction
