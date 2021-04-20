@@ -275,12 +275,12 @@ impl Drop for TempPin {
 }
 
 /// An ipfs block
-pub trait Block {
+pub trait Block<S> {
     fn cid(&self) -> &Cid;
     fn data(&self) -> &[u8];
 }
 
-impl<B: Block> Block for &B {
+impl<S, B: Block<S>> Block<S> for &B {
     fn cid(&self) -> &Cid {
         (*self).cid()
     }
@@ -290,7 +290,7 @@ impl<B: Block> Block for &B {
     }
 }
 
-impl<S: StoreParams> Block for libipld::Block<S> {
+impl<S: StoreParams> Block<S> for libipld::Block<S> {
     fn cid(&self) -> &Cid {
         libipld::Block::cid(&self)
     }
@@ -300,7 +300,7 @@ impl<S: StoreParams> Block for libipld::Block<S> {
     }
 }
 
-pub(crate) fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
+pub(crate) fn links<S>(block: &impl Block<S>) -> anyhow::Result<Vec<Cid>> {
     let mut links = Vec::new();
     IpldCodec::try_from(block.cid().codec())?
         .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
@@ -522,7 +522,7 @@ impl<S: StoreParams> BlockStore<S> {
     /// - `alias` an optional temporary alias.
     ///   This can be used to incrementally add blocks without having to worry about them being garbage
     ///   collected before they can be pinned with a permanent alias.
-    pub fn put_blocks<B: Block>(
+    pub fn put_blocks<B: Block<S>>(
         &mut self,
         blocks: impl IntoIterator<Item = B>,
         pin: Option<&TempPin>,
@@ -542,7 +542,7 @@ impl<S: StoreParams> BlockStore<S> {
     /// - `data` a blob
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
-    pub fn put_block(&mut self, block: &impl Block, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block(&mut self, block: &impl Block<S>, pin: Option<&TempPin>) -> Result<()> {
         let txn = self.transaction()?;
         txn.put_block(block, pin)?;
         txn.commit()

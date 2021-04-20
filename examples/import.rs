@@ -33,7 +33,7 @@ pub struct OldBlock {
 
 pub struct IpldBlock(libipld::Block<DefaultParams>);
 
-impl ipfs_sqlite_block_store::Block for IpldBlock {
+impl ipfs_sqlite_block_store::Block<DefaultParams> for IpldBlock {
     fn cid(&self) -> &Cid {
         self.0.cid()
     }

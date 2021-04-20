@@ -166,7 +166,7 @@ impl<'a, S> Transaction<'a, S> {
     }
 
     /// Put a block. This will only be completed once the transaction is successfully committed
-    pub fn put_block<B: Block>(&self, block: B, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block<B: Block<S>>(&self, block: B, pin: Option<&TempPin>) -> Result<()> {
         let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let cid_bytes = CidBytes::try_from(block.cid())?;
         let links = links(&block)?
