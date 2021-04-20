@@ -541,14 +541,14 @@ impl BlockStore {
 
     /// Get all cids that the store knows about
     pub fn get_known_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
-        let res = in_ro_txn(&self.conn, |txn| Ok(get_known_cids::<CidBytes>(txn)?))?;
+        let res = in_ro_txn(&self.conn, |txn| get_known_cids::<CidBytes>(txn))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
     /// Get all cids for which the store has blocks
     pub fn get_block_cids<C: FromIterator<Cid>>(&self) -> Result<C> {
-        let res = in_ro_txn(&self.conn, |txn| Ok(get_block_cids::<CidBytes>(txn)?))?;
+        let res = in_ro_txn(&self.conn, |txn| get_block_cids::<CidBytes>(txn))?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
@@ -634,13 +634,7 @@ impl BlockStore {
                 for id in expired_temp_pins {
                     delete_temp_pin(txn, id)?;
                 }
-                Ok(incremental_gc(
-                    &txn,
-                    min_blocks,
-                    max_duration,
-                    size_targets,
-                    cache_tracker,
-                )?)
+                incremental_gc(&txn, min_blocks, max_duration, size_targets, cache_tracker)
             })
         })?;
         self.config.cache_tracker.blocks_deleted(deleted);
@@ -665,15 +659,11 @@ impl BlockStore {
         min_blocks: usize,
         max_duration: Duration,
     ) -> Result<bool> {
-        Ok(log_execution_time(
-            "delete_orphaned",
-            Duration::from_millis(100),
-            || {
-                in_txn(&mut self.conn, move |txn| {
-                    Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
-                })
-            },
-        )?)
+        log_execution_time("delete_orphaned", Duration::from_millis(100), || {
+            in_txn(&mut self.conn, move |txn| {
+                Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
+            })
+        })
     }
     /// Add a number of blocks to the store
     ///
@@ -695,7 +685,7 @@ impl BlockStore {
     ) -> Result<()> {
         let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let infos = in_txn(&mut self.conn, |txn| {
-            Ok(blocks
+            blocks
                 .into_iter()
                 .map(|block| {
                     let cid_bytes = CidBytes::try_from(block.cid())?;
@@ -709,7 +699,7 @@ impl BlockStore {
                         res.block_exists,
                     ))
                 })
-                .collect::<Result<Vec<_>>>()?)
+                .collect::<Result<Vec<_>>>()
         })?;
         if let (Some(pin), Some(p)) = (pin, pin0) {
             pin.id.store(p, Ordering::SeqCst);

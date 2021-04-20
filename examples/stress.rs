@@ -77,7 +77,7 @@ fn build_tree(prefix: &str, branch: u64, depth: u64) -> anyhow::Result<(Cid, Vec
 }
 
 fn build_chain(prefix: &str, n: usize) -> anyhow::Result<(Cid, Vec<OwnedBlock>)> {
-    assert!(n > 0);
+    anyhow::ensure!(n > 0);
     let mut blocks = Vec::with_capacity(n);
     let mk_node = |i: usize, links| block(&format!("{}-{}", prefix, i), links);
     let mut prev: Option<Cid> = None;

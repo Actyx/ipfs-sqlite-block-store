@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     let mut cids = Vec::new();
     for is in &(0..n).chunks(1000) {
         info!("adding 1000 blocks");
-        let blocks = is.map(|i| unpinned(i)).collect::<Vec<_>>();
+        let blocks = is.map(unpinned).collect::<Vec<_>>();
         for block in &blocks {
             cids.push(*block.cid());
         }

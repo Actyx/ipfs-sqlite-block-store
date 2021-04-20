@@ -78,7 +78,7 @@ impl ToSql for CidBytes {
 
 impl FromSql for CidBytes {
     fn column_result(value: ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        Ok(CidBytes::try_from(value.as_blob()?).map_err(|_| FromSqlError::InvalidType)?)
+        CidBytes::try_from(value.as_blob()?).map_err(|_| FromSqlError::InvalidType)
     }
 }
 
