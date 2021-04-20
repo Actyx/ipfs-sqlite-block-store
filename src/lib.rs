@@ -711,14 +711,4 @@ impl BlockStore {
     pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         Ok(self.get_blocks(std::iter::once(*cid))?.next().unwrap().1)
     }
-
-    /// the underlying rusqlite connection
-    pub fn connection(&self) -> &Connection {
-        &self.conn
-    }
-
-    /// the underlying rusqlite connection as a mutable reference
-    pub fn connection_mut(&mut self) -> &mut Connection {
-        &mut self.conn
-    }
 }
