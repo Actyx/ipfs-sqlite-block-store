@@ -642,14 +642,4 @@ impl BlockStore {
             })
         })
     }
-
-    /// the underlying rusqlite connection
-    pub fn connection(&self) -> &Connection {
-        &self.conn
-    }
-
-    /// the underlying rusqlite connection as a mutable reference
-    pub fn connection_mut(&mut self) -> &mut Connection {
-        &mut self.conn
-    }
 }
