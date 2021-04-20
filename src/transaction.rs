@@ -2,14 +2,15 @@ use crate::{
     cache::{BlockInfo, CacheTracker, WriteInfo},
     cidbytes::CidBytes,
     db::*,
-    links, Block, BlockStore, Result, StoreStats, TempPin,
+    Block, BlockStore, Result, StoreStats, TempPin,
 };
 use fnv::FnvHashSet;
-use libipld::{cid, Cid};
+use libipld::{cid, codec::References, store::StoreParams, Cid, Ipld};
 use parking_lot::Mutex;
 use std::{
     convert::TryFrom,
     iter::FromIterator,
+    marker::PhantomData,
     mem,
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -18,10 +19,11 @@ use std::{
     time::Duration,
 };
 
-pub struct Transaction<'a> {
+pub struct Transaction<'a, S> {
     inner: rusqlite::Transaction<'a>,
     info: Mutex<TransactionInfo>,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
+    _s: PhantomData<S>,
 }
 
 struct TransactionInfo {
@@ -45,8 +47,12 @@ impl Drop for TransactionInfo {
     }
 }
 
-impl<'a> Transaction<'a> {
-    pub(crate) fn new(owner: &'a mut BlockStore) -> Result<Self> {
+impl<'a, S> Transaction<'a, S>
+where
+    S: StoreParams,
+    Ipld: References<S::Codecs>,
+{
+    pub(crate) fn new(owner: &'a mut BlockStore<S>) -> Result<Self> {
         Ok(Self {
             inner: owner.conn.transaction()?,
             info: Mutex::new(TransactionInfo {
@@ -56,6 +62,7 @@ impl<'a> Transaction<'a> {
                 tracker: owner.config.cache_tracker.clone(),
             }),
             expired_temp_pins: owner.expired_temp_pins.clone(),
+            _s: PhantomData,
         })
     }
 
@@ -163,10 +170,12 @@ impl<'a> Transaction<'a> {
     }
 
     /// Put a block. This will only be completed once the transaction is successfully committed
-    pub fn put_block<B: Block>(&self, block: B, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block(&self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
         let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let cid_bytes = CidBytes::try_from(block.cid())?;
-        let links = links(&block)?
+        let mut links = Vec::new();
+        block.references(&mut links)?;
+        let links = links
             .iter()
             .map(CidBytes::try_from)
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;

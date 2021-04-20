@@ -3,7 +3,7 @@ use crate::{
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
-    BlockStore, Config, DbPath, SizeTargets,
+    Config, DbPath, SizeTargets,
 };
 use fnv::FnvHashSet;
 use libipld::{
@@ -17,6 +17,7 @@ use std::time::Duration;
 use tempdir::TempDir;
 
 type Block = libipld::Block<libipld::DefaultParams>;
+type BlockStore = crate::BlockStore<libipld::DefaultParams>;
 
 #[derive(Debug, DagCbor)]
 struct Node {

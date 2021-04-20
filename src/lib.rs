@@ -69,13 +69,13 @@ mod transaction;
 use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
-use libipld::{cid::Cid, codec::Codec, store::StoreParams, Ipld, IpldCodec};
+use libipld::{cid::Cid, codec::References, store::StoreParams, Block, Ipld};
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
-    convert::TryFrom,
     fmt,
     iter::FromIterator,
+    marker::PhantomData,
     mem,
     ops::DerefMut,
     path::{Path, PathBuf},
@@ -215,10 +215,11 @@ impl Config {
     }
 }
 
-pub struct BlockStore {
+pub struct BlockStore<S> {
     conn: Connection,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
+    _s: PhantomData<S>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -272,40 +273,11 @@ impl Drop for TempPin {
     }
 }
 
-/// An ipfs block
-pub trait Block {
-    fn cid(&self) -> &Cid;
-    fn data(&self) -> &[u8];
-}
-
-impl<B: Block> Block for &B {
-    fn cid(&self) -> &Cid {
-        (*self).cid()
-    }
-
-    fn data(&self) -> &[u8] {
-        (*self).data()
-    }
-}
-
-impl<S: StoreParams> Block for libipld::Block<S> {
-    fn cid(&self) -> &Cid {
-        libipld::Block::cid(&self)
-    }
-
-    fn data(&self) -> &[u8] {
-        libipld::Block::data(&self)
-    }
-}
-
-pub(crate) fn links(block: &impl Block) -> anyhow::Result<Vec<Cid>> {
-    let mut links = Vec::new();
-    IpldCodec::try_from(block.cid().codec())?
-        .references::<Ipld, Vec<_>>(&block.data(), &mut links)?;
-    Ok(links)
-}
-
-impl BlockStore {
+impl<S> BlockStore<S>
+where
+    S: StoreParams,
+    Ipld: References<S::Codecs>,
+{
     fn create_connection(db_path: DbPath, config: &Config) -> crate::Result<rusqlite::Connection> {
         let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         flags |= if config.read_only {
@@ -338,6 +310,7 @@ impl BlockStore {
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
+            _s: PhantomData,
         })
     }
 
@@ -383,6 +356,7 @@ impl BlockStore {
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
+            _s: PhantomData,
         })
     }
 
@@ -404,7 +378,7 @@ impl BlockStore {
         }
     }
 
-    pub fn transaction(&mut self) -> Result<Transaction<'_>> {
+    pub fn transaction(&mut self) -> Result<Transaction<'_, S>> {
         Transaction::new(self)
     }
 
@@ -518,14 +492,14 @@ impl BlockStore {
     /// - `alias` an optional temporary alias.
     ///   This can be used to incrementally add blocks without having to worry about them being garbage
     ///   collected before they can be pinned with a permanent alias.
-    pub fn put_blocks<B: Block>(
+    pub fn put_blocks(
         &mut self,
-        blocks: impl IntoIterator<Item = B>,
+        blocks: impl IntoIterator<Item = Block<S>>,
         pin: Option<&TempPin>,
     ) -> Result<()> {
         let txn = self.transaction()?;
         for block in blocks {
-            txn.put_block(block, pin)?;
+            txn.put_block(&block, pin)?;
         }
         txn.commit()
     }
@@ -538,7 +512,7 @@ impl BlockStore {
     /// - `data` a blob
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
-    pub fn put_block(&mut self, block: &impl Block, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block(&mut self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
         let txn = self.transaction()?;
         txn.put_block(block, pin)?;
         txn.commit()

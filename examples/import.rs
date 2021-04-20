@@ -31,18 +31,6 @@ pub struct OldBlock {
     data: Vec<u8>,
 }
 
-pub struct IpldBlock(libipld::Block<DefaultParams>);
-
-impl ipfs_sqlite_block_store::Block for IpldBlock {
-    fn cid(&self) -> &Cid {
-        self.0.cid()
-    }
-
-    fn data(&self) -> &[u8] {
-        self.0.data()
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)
@@ -58,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     let roots = Path::new(&args[1]);
     let blocks = Path::new(&args[2]);
     let output = Path::new("out.sqlite");
-    let mut store = BlockStore::open(output, Config::default())?;
+    let mut store = BlockStore::<libipld::DefaultParams>::open(output, Config::default())?;
 
     let blocks = Connection::open_with_flags(blocks, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let len: u32 = blocks.query_row("SELECT COUNT(1) FROM blocks", [], |row| row.get(0))?;
