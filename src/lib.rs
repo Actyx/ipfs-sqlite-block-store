@@ -402,18 +402,6 @@ where
         self.transaction()?.resolve(name)
     }
 
-    /// Add multiple permanent named aliases
-    pub fn alias_many(
-        &mut self,
-        aliases: impl IntoIterator<Item = (impl AsRef<[u8]>, Option<Cid>)>,
-    ) -> crate::Result<()> {
-        let txn = self.transaction()?;
-        for (name, link) in aliases.into_iter() {
-            txn.alias(name.as_ref(), link.as_ref())?;
-        }
-        txn.commit()
-    }
-
     pub fn extend_temp_pin(
         &mut self,
         pin: &TempPin,
@@ -440,18 +428,6 @@ where
     /// Checks if the store has the data for a cid
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         self.transaction()?.has_block(cid)
-    }
-
-    /// Look up multiple blocks in one read transaction
-    pub fn has_blocks<I, O>(&mut self, cids: I) -> Result<O>
-    where
-        I: IntoIterator<Item = Cid>,
-        O: FromIterator<(Cid, bool)>,
-    {
-        let txn = self.transaction()?;
-        cids.into_iter()
-            .map(|cid| txn.has_cid(&cid).map(|res| (cid, res)))
-            .collect::<crate::Result<O>>()
     }
 
     /// Get the stats for the store.
@@ -503,6 +479,7 @@ where
         }
         txn.commit()
     }
+
     /// Add a single block
     ///
     /// this is just a convenience method that calls put_blocks internally.
@@ -516,19 +493,6 @@ where
         let txn = self.transaction()?;
         txn.put_block(block, pin)?;
         txn.commit()
-    }
-
-    /// Get multiple blocks in a single read transaction
-    pub fn get_blocks<I>(&mut self, cids: I) -> Result<impl Iterator<Item = (Cid, Option<Vec<u8>>)>>
-    where
-        I: IntoIterator<Item = Cid>,
-    {
-        let txn = self.transaction()?;
-        let res = cids
-            .into_iter()
-            .map(|cid| txn.get_block(&cid).map(|res| (cid, res)))
-            .collect::<crate::Result<Vec<_>>>()?;
-        Ok(res.into_iter())
     }
 
     /// Get data for a block
