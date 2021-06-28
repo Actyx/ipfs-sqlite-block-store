@@ -46,13 +46,6 @@
 //!
 //! For blocking usage, use [BlockStore](BlockStore). This is the most low level interface.
 //!
-//! ## Non-blocking
-//!
-//! For non-blocking usage, use [AsyncBlockStore](async_block_store::AsyncBlockStore). This is a
-//! wrapper that is meant to be used from async rust. In addition to wrapping most methods of
-//! [BlockStore], it provides a method [gc_loop](async_block_store::AsyncBlockStore::gc_loop) to
-//! run gc continuously.
-//!
 //! # Major differences to the go-ipfs pinning concept
 //!
 //! - Pinning/aliasing a root does not require that the dag is complete
@@ -86,7 +79,7 @@ use std::{
     time::Duration,
 };
 use tracing::*;
-use transaction::Transaction;
+pub use transaction::Transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DbPath {
