@@ -17,6 +17,7 @@ libipld = { version = "0.12.0", default-features = false }
 parking_lot = "0.11.1"
 rusqlite = { version = "0.25.3", features = ["backup", "bundled"] }
 tracing = "0.1.26"
+weight-cache = "0.2.3"
 
 [dev-dependencies]
 itertools = "0.10.0"

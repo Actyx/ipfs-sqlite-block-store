@@ -2,6 +2,7 @@ use crate::{
     cache::{BlockInfo, CacheTracker, WriteInfo},
     cidbytes::CidBytes,
     db::*,
+    memcache::MemCache,
     Block, BlockStore, Result, StoreStats, TempPin,
 };
 use fnv::FnvHashSet;
@@ -21,19 +22,20 @@ use std::{
 
 pub struct Transaction<'a, S> {
     inner: rusqlite::Transaction<'a>,
-    info: Mutex<TransactionInfo>,
+    info: Mutex<TransactionInfo<'a>>,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     _s: PhantomData<S>,
 }
 
-struct TransactionInfo {
+struct TransactionInfo<'a> {
+    mem_cache: MemCache<'a>,
     written: Vec<WriteInfo>,
     accessed: Vec<BlockInfo>,
     committed: bool,
     tracker: Arc<dyn CacheTracker>,
 }
 
-impl Drop for TransactionInfo {
+impl<'a> Drop for TransactionInfo<'a> {
     fn drop(&mut self) {
         if !self.accessed.is_empty() {
             let blocks = mem::replace(&mut self.accessed, Vec::new());
@@ -53,13 +55,17 @@ where
     Ipld: References<S::Codecs>,
 {
     pub(crate) fn new(owner: &'a mut BlockStore<S>) -> Result<Self> {
+        let mem_cache = &mut owner.mem_cache;
+        let conn = &mut owner.conn;
+        let mem_cache = MemCache::new(1024, 1024 * 1024 * 4, Some(mem_cache));
         Ok(Self {
-            inner: owner.conn.transaction()?,
+            inner: conn.transaction()?,
             info: Mutex::new(TransactionInfo {
                 written: Vec::new(),
                 accessed: Vec::new(),
                 committed: false,
                 tracker: owner.config.cache_tracker.clone(),
+                mem_cache,
             }),
             expired_temp_pins: owner.expired_temp_pins.clone(),
             _s: PhantomData,
@@ -111,8 +117,10 @@ where
     ///
     /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&self, cid: &Cid) -> Result<bool> {
-        let cid = CidBytes::try_from(cid)?;
-        has_cid(self.txn(), cid)
+        Ok(
+            self.info.lock().mem_cache.has(cid) ||
+            has_cid(self.txn(), CidBytes::try_from(cid)?)?
+        )
     }
 
     /// Checks if the store has the data for a cid

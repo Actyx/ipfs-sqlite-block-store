@@ -55,6 +55,7 @@ pub mod cache;
 mod cidbytes;
 mod db;
 mod error;
+mod memcache;
 #[cfg(test)]
 mod tests;
 mod transaction;
@@ -63,6 +64,7 @@ use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
 use libipld::{cid::Cid, codec::References, store::StoreParams, Block, Ipld};
+use memcache::MemCache;
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
@@ -210,6 +212,7 @@ impl Config {
 
 pub struct BlockStore<S> {
     conn: Connection,
+    mem_cache: MemCache<'static>,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
     _s: PhantomData<S>,
@@ -301,6 +304,7 @@ where
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
+            mem_cache: MemCache::new(1024, 1024 * 1024 * 4, None),
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             _s: PhantomData,
@@ -347,6 +351,7 @@ where
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
+            mem_cache: MemCache::new(1024, 1024 * 1024 * 4, None),
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             _s: PhantomData,
@@ -415,7 +420,10 @@ where
     /// Checks if the store knows about the cid.
     /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&mut self, cid: &Cid) -> Result<bool> {
-        self.transaction()?.has_cid(cid)
+        Ok(
+            self.mem_cache.has(cid) ||
+            self.transaction()?.has_cid(cid)?
+        )
     }
 
     /// Checks if the store has the data for a cid
