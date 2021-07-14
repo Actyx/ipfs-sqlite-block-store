@@ -212,7 +212,7 @@ impl Config {
 
 pub struct BlockStore<S> {
     conn: Connection,
-    mem_cache: MemCache<'static>,
+    mem_cache: MemCache,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
     _s: PhantomData<S>,
@@ -304,7 +304,7 @@ where
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            mem_cache: MemCache::new(1024, 1024 * 1024 * 4, None),
+            mem_cache: MemCache::new(1024, 1024 * 1024 * 4),
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             _s: PhantomData,
@@ -351,7 +351,7 @@ where
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            mem_cache: MemCache::new(1024, 1024 * 1024 * 4, None),
+            mem_cache: MemCache::new(1024, 1024 * 1024 * 4),
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             _s: PhantomData,
@@ -420,10 +420,7 @@ where
     /// Checks if the store knows about the cid.
     /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&mut self, cid: &Cid) -> Result<bool> {
-        Ok(
-            self.mem_cache.has(cid) ||
-            self.transaction()?.has_cid(cid)?
-        )
+        self.transaction()?.has_cid(cid)
     }
 
     /// Checks if the store has the data for a cid
@@ -512,6 +509,8 @@ where
     /// for a large block store, this can take several seconds to minutes. If that is not acceptable,
     /// consider using incremental gc.
     pub fn gc(&mut self) -> Result<()> {
+        // the brute force option of cache coherence
+        self.mem_cache.clear();
         loop {
             let complete = self.incremental_gc(20000, Duration::from_secs(1))?;
             while !self.incremental_delete_orphaned(20000, Duration::from_secs(1))? {}

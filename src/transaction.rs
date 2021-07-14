@@ -28,7 +28,8 @@ pub struct Transaction<'a, S> {
 }
 
 struct TransactionInfo<'a> {
-    mem_cache: MemCache<'a>,
+    mem_cache: &'a mut MemCache,
+    // txn: std::result::Result<&'a mut rusqlite::Transaction<'a>, &'a mut rusqlite::Connection>,
     written: Vec<WriteInfo>,
     accessed: Vec<BlockInfo>,
     committed: bool,
@@ -57,7 +58,6 @@ where
     pub(crate) fn new(owner: &'a mut BlockStore<S>) -> Result<Self> {
         let mem_cache = &mut owner.mem_cache;
         let conn = &mut owner.conn;
-        let mem_cache = MemCache::new(1024, 1024 * 1024 * 4, Some(mem_cache));
         Ok(Self {
             inner: conn.transaction()?,
             info: Mutex::new(TransactionInfo {
@@ -117,16 +117,12 @@ where
     ///
     /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&self, cid: &Cid) -> Result<bool> {
-        Ok(
-            self.info.lock().mem_cache.has(cid) ||
-            has_cid(self.txn(), CidBytes::try_from(cid)?)?
-        )
+        Ok(self.info.lock().mem_cache.has(cid) || has_cid(self.txn(), CidBytes::try_from(cid)?)?)
     }
 
     /// Checks if the store has the data for a cid
     pub fn has_block(&self, cid: &Cid) -> Result<bool> {
-        let cid = CidBytes::try_from(cid)?;
-        has_block(self.txn(), cid)
+        Ok(self.info.lock().mem_cache.has(cid) || has_block(self.txn(), CidBytes::try_from(cid)?)?)
     }
 
     /// Get all cids that the store knows about
@@ -195,18 +191,33 @@ where
         if let (Some(pin), Some(p)) = (pin, pin0) {
             pin.id.store(p, Ordering::SeqCst);
         }
-        self.info.lock().written.push(write_info);
+        let mut ti = self.info.lock();
+        // mark it as written
+        ti.written.push(write_info);
+        // offer it to the cache
+        ti.mem_cache.offer(res.id, block.cid(), block.data());
         Ok(())
     }
 
     /// Get a block
     pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
-        let response = get_block(self.txn(), &CidBytes::try_from(cid)?)?;
+        let mut ti = self.info.lock();
+        // first try the cache
+        let mut response = ti.mem_cache.get(cid);
+        // then try for real
+        if response.is_none() {
+            response = get_block(self.txn(), &CidBytes::try_from(cid)?)?;
+            // if we get a response, offer it to the cache
+            if let Some((id, data)) = response.as_ref() {
+                ti.mem_cache.offer(*id, cid, data.as_ref());
+            }
+        }
+        // log access in any case
         if let Some(info) = response
             .as_ref()
             .map(|(id, data)| BlockInfo::new(*id, cid, data.len()))
         {
-            self.info.lock().accessed.push(info);
+            ti.accessed.push(info);
         }
         Ok(response.map(|(_id, data)| data))
     }
