@@ -441,6 +441,23 @@ fn temp_pin() -> anyhow::Result<()> {
 }
 
 #[test]
+fn transaction_rollback() -> anyhow::Result<()> {
+    let mut store = BlockStore::memory(Config::default())?;
+    let a = block("a");
+    let b = block("b");
+    store.put_block(&a, None)?;
+    let txn = store.transaction()?;
+    txn.put_block(&b, None)?;
+    // drop without comitting
+    drop(txn);
+    
+    assert!(store.has_block(a.cid())?);
+    assert!(!store.has_block(b.cid())?);
+
+    Ok(())
+}
+
+#[test]
 fn broken_db() -> anyhow::Result<()> {
     let tmp = TempDir::new("broken_db")?;
     let path = tmp.path().join("mini.sqlite");

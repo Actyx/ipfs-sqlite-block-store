@@ -304,7 +304,7 @@ where
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            mem_cache: MemCache::new(1024, 1024 * 1024 * 4),
+            mem_cache: MemCache::default(),
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             _s: PhantomData,
@@ -351,7 +351,7 @@ where
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
-            mem_cache: MemCache::new(1024, 1024 * 1024 * 4),
+            mem_cache: MemCache::default(),
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             _s: PhantomData,

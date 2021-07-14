@@ -11,6 +11,12 @@ impl Weighable for MemBlock {
     }
 }
 
+impl Default for MemCache {
+    fn default() -> Self {
+        Self::new(1024, 1024 * 1024 * 4)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct MemCache {
     /// the actual cache, disabled if a capacity of 0 was configured
@@ -21,6 +27,9 @@ pub(crate) struct MemCache {
 }
 
 impl MemCache {
+    /// create a new MemCache
+    /// `max_size` the maximum size for a block to be considered for caching
+    /// `capacity` the total capacity of the cache, 0 to disable
     pub fn new(max_size: usize, capacity: usize) -> Self {
         let capacity = capacity.try_into().ok();
         Self {
@@ -29,6 +38,7 @@ impl MemCache {
         }
     }
 
+    /// offer a block to the cache, it will only consider it for caching if it is <= max_size
     pub fn offer(&mut self, id: i64, key: &Cid, data: &[u8]) {
         if let Some(cache) = self.inner.as_mut() {
             if data.len() <= self.max_size {
@@ -37,10 +47,12 @@ impl MemCache {
         }
     }
 
+    /// get a block out of the cache
     pub fn get(&mut self, key: &Cid) -> Option<(i64, Vec<u8>)> {
         self.get0(key).map(|x| (x.0, x.1.to_vec()))
     }
 
+    /// check if the cache has a block
     pub fn has(&mut self, key: &Cid) -> bool {
         self.get0(key).is_some()
     }
@@ -50,7 +62,14 @@ impl MemCache {
         self.inner.as_mut().and_then(|cache| cache.get(key))
     }
 
+    /// clear the cache
     pub fn clear(&mut self) {
         self.inner = Some(WeightCache::new((1024 * 1024 * 4).try_into().unwrap()));
+    }
+
+    /// remove a single cid
+    pub fn remove(&mut self, _cid: &Cid) {
+        // well, it works
+        self.clear()
     }
 }
