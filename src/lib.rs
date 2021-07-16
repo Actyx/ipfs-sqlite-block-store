@@ -60,6 +60,9 @@ mod memcache;
 mod tests;
 mod transaction;
 
+#[cfg(feature = "metrics")]
+mod prom;
+
 use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
 pub use error::{BlockStoreError, Result};
@@ -82,6 +85,8 @@ use std::{
 };
 use tracing::*;
 pub use transaction::Transaction;
+#[cfg(feature = "metrics")]
+pub use prom::register;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DbPath {

@@ -3,17 +3,12 @@ use fnv::FnvHashSet;
 use lazy_init::LazyTransform;
 use libipld::{cid, codec::References, store::StoreParams, Cid, Ipld};
 use parking_lot::Mutex;
-use std::{
-    convert::TryFrom,
-    iter::FromIterator,
-    marker::PhantomData,
-    mem,
-    sync::{
+use std::{convert::TryFrom, iter::FromIterator, marker::PhantomData, mem, sync::{
         atomic::{AtomicI64, Ordering},
         Arc,
-    },
-    time::Duration,
-};
+    }, time::{Duration, Instant}};
+#[cfg(feature = "metrics")]
+use crate::prom::{BLOCK_GET_HIST, BLOCK_PUT_HIST};
 
 pub struct Transaction<'a, S> {
     inner: LazyTransform<&'a mut rusqlite::Connection, rusqlite::Result<rusqlite::Transaction<'a>>>,
@@ -180,6 +175,8 @@ where
 
     /// Put a block. This will only be completed once the transaction is successfully committed
     pub fn put_block(&self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
+        #[cfg(feature = "metrics")]
+        let _timer = BLOCK_PUT_HIST.start_timer();
         let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let cid_bytes = CidBytes::try_from(block.cid())?;
         let mut links = Vec::new();
@@ -204,17 +201,23 @@ where
         Ok(())
     }
 
-    /// Get a block
+    /// Get a block    
     pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
+        #[cfg(feature = "metrics")]
+        let _timer = BLOCK_GET_HIST.start_timer();
         let mut ti = self.info.lock();
         // first try the cache
         let mut response = ti.mem_cache.get(cid);
         // then try for real
-        if response.is_none() {
+        if false && response.is_none() {
+            let t0 = Instant::now();
             response = get_block(self.txn()?, &CidBytes::try_from(cid)?)?;
             // if we get a response, offer it to the cache
             if let Some((id, data)) = response.as_ref() {
+                tracing::info!("FOUND IN REAL DB");
                 ti.mem_cache.offer(*id, cid, data.as_ref());
+            } else {
+                tracing::info!("NOT FOUND AT ALL {}", t0.elapsed().as_secs_f64());
             }
         }
         // log access in any case

@@ -5,6 +5,9 @@ use weight_cache::{Weighable, WeightCache};
 #[derive(Debug)]
 struct MemBlock(i64, Arc<[u8]>);
 
+const CAPACITY: usize = 1024 * 1024 * 64;
+const MAX_SIZE: usize = 1024 * 4;
+
 impl Weighable for MemBlock {
     fn measure(value: &Self) -> usize {
         value.1.len()
@@ -13,7 +16,7 @@ impl Weighable for MemBlock {
 
 impl Default for MemCache {
     fn default() -> Self {
-        Self::new(1024, 1024 * 1024 * 4)
+        Self::new(MAX_SIZE, CAPACITY)
     }
 }
 
@@ -59,12 +62,21 @@ impl MemCache {
 
     /// get the value, just from ourselves, as a MemBlock
     fn get0(&mut self, key: &Cid) -> Option<&MemBlock> {
-        self.inner.as_mut().and_then(|cache| cache.get(key))
+        match self.inner.as_mut().and_then(|cache| cache.get(key)) {
+            Some(block) => {
+                tracing::info!("CACHE HIT {}", block.1.len());
+                Some(block)
+            },
+            None => {
+                tracing::info!("CACHE MISS");
+                None
+            }
+        }
     }
 
     /// clear the cache
     pub fn clear(&mut self) {
-        self.inner = Some(WeightCache::new((1024 * 1024 * 4).try_into().unwrap()));
+        self.inner = Some(WeightCache::new(CAPACITY.try_into().unwrap()));
     }
 
     /// remove a single cid
