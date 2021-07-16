@@ -466,7 +466,7 @@ where
         blocks: impl IntoIterator<Item = Block<S>>,
         pin: Option<&TempPin>,
     ) -> Result<()> {
-        let txn = self.transaction()?;
+        let mut txn = self.transaction()?;
         for block in blocks {
             txn.put_block(&block, pin)?;
         }
@@ -483,7 +483,7 @@ where
     /// - `links` links extracted from the data
     /// - `alias` an optional temporary alias
     pub fn put_block(&mut self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
-        let txn = self.transaction()?;
+        let mut txn = self.transaction()?;
         txn.put_block(block, pin)?;
         txn.commit()
     }

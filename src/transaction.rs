@@ -21,7 +21,7 @@ use std::{
 
 pub struct Transaction<'a, S> {
     inner: rusqlite::Transaction<'a>,
-    info: Mutex<TransactionInfo>,
+    info: TransactionInfo,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     _s: PhantomData<S>,
 }
@@ -55,12 +55,12 @@ where
     pub(crate) fn new(owner: &'a mut BlockStore<S>) -> Result<Self> {
         Ok(Self {
             inner: owner.conn.transaction()?,
-            info: Mutex::new(TransactionInfo {
+            info: TransactionInfo {
                 written: Vec::new(),
                 accessed: Vec::new(),
                 committed: false,
                 tracker: owner.config.cache_tracker.clone(),
-            }),
+            },
             expired_temp_pins: owner.expired_temp_pins.clone(),
             _s: PhantomData,
         })
@@ -170,7 +170,7 @@ where
     }
 
     /// Put a block. This will only be completed once the transaction is successfully committed
-    pub fn put_block(&self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
+    pub fn put_block(&mut self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
         let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
         let cid_bytes = CidBytes::try_from(block.cid())?;
         let mut links = Vec::new();
@@ -187,18 +187,18 @@ where
         if let (Some(pin), Some(p)) = (pin, pin0) {
             pin.id.store(p, Ordering::SeqCst);
         }
-        self.info.lock().written.push(write_info);
+        self.info.written.push(write_info);
         Ok(())
     }
 
     /// Get a block
-    pub fn get_block(&self, cid: &Cid) -> Result<Option<Vec<u8>>> {
+    pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
         let response = get_block(self.txn(), &CidBytes::try_from(cid)?)?;
         if let Some(info) = response
             .as_ref()
             .map(|(id, data)| BlockInfo::new(*id, cid, data.len()))
         {
-            self.info.lock().accessed.push(info);
+            self.info.accessed.push(info);
         }
         Ok(response.map(|(_id, data)| data))
     }
@@ -211,9 +211,10 @@ where
     }
 
     /// Commit and consume the transaction. Default is to not commit.
-    pub fn commit(self) -> Result<()> {
+    pub fn commit(mut self) -> Result<()> {
         self.inner.commit()?;
-        self.info.lock().committed = true;
+        // this is just to inform the drop of the TransactionInfo what to do
+        self.info.committed = true;
         Ok(())
     }
 }
