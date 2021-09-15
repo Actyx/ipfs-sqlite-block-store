@@ -318,8 +318,6 @@ pub(crate) fn incremental_delete_orphaned(
         delete_stmt.execute([id])?;
         n += 1;
     }
-    let mut vacuum_stmt = txn.prepare("PRAGMA incremental_vacuum;")?;
-    vacuum_stmt.execute([])?;
     Ok(n == ids.len())
 }
 
