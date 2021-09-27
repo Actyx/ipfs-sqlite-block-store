@@ -568,9 +568,11 @@ where
         max_duration: Duration,
     ) -> Result<bool> {
         log_execution_time("delete_orphaned", Duration::from_millis(100), || {
-            in_txn(&mut self.conn, move |txn| {
+            let result = in_txn(&mut self.conn, move |txn| {
                 Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
-            })
+            })?;
+            self.conn.execute("PRAGMA incremental_vacuum;", [])?;
+            Ok(result)
         })
     }
 }

@@ -25,6 +25,8 @@ use crate::{
 };
 
 const PRAGMAS: &str = r#"
+-- this must be done before creating the first table, otherwise it has no effect
+PRAGMA auto_vacuum = 2;
 -- this must be done before changing the database via the CLI!
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
