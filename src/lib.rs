@@ -571,7 +571,7 @@ where
             let result = in_txn(&mut self.conn, move |txn| {
                 Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
             })?;
-            self.conn.execute("PRAGMA incremental_vacuum;", [])?;
+            self.conn.execute("PRAGMA incremental_vacuum;", []).ok();
             Ok(result)
         })
     }
