@@ -216,7 +216,7 @@ fn size_targets() -> anyhow::Result<()> {
     for i in 0..2 {
         let block = pinned(i);
         store.put_block(&block, None)?;
-        store.alias(block.cid().to_bytes(), Some(&block.cid()))?;
+        store.alias(block.cid().to_bytes(), Some(block.cid()))?;
     }
 
     // add data that is within the size targets
@@ -303,7 +303,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
 
     // access one of the existing unpinned blocks to move it to the front
     assert_eq!(
-        store.get_block(&unpinned(0).cid())?,
+        store.get_block(unpinned(0).cid())?,
         Some(unpinned(0).data().to_vec())
     );
 

@@ -147,7 +147,7 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
         block.references(&mut set)?;
         let mut pin = None;
         put_block(
-            &txn,
+            txn,
             &block.cid().to_bytes(),
             block.data(),
             set.into_iter()
@@ -195,7 +195,7 @@ pub(crate) fn get_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
 }
 
 fn get_or_create_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<i64> {
-    let id = get_id(&txn, cid.to_sql()?)?;
+    let id = get_id(txn, cid.to_sql()?)?;
     Ok(if let Some(id) = id {
         id
     } else {
@@ -370,7 +370,7 @@ pub(crate) fn put_block<C: ToSql>(
     links: impl IntoIterator<Item = C>,
     pin: &mut Option<i64>,
 ) -> crate::Result<PutBlockResult> {
-    let id = get_or_create_id(&txn, &key)?;
+    let id = get_or_create_id(txn, &key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
         .query_row([id], |_| Ok(()))
@@ -393,7 +393,7 @@ pub(crate) fn put_block<C: ToSql>(
         let mut insert_ref =
             txn.prepare_cached("INSERT INTO refs (parent_id, child_id) VALUES (?,?)")?;
         for link in links {
-            let child_id: i64 = get_or_create_id(&txn, link)?;
+            let child_id: i64 = get_or_create_id(txn, link)?;
             insert_ref.execute([id, child_id])?;
         }
     }
@@ -405,7 +405,7 @@ pub(crate) fn get_block(
     txn: &Transaction,
     cid: impl ToSql,
 ) -> crate::Result<Option<(i64, Vec<u8>)>> {
-    let id = get_id(&txn, cid)?;
+    let id = get_id(txn, cid)?;
     Ok(if let Some(id) = id {
         txn.prepare_cached("SELECT block FROM blocks WHERE block_id = ?")?
             .query_row([id], |row| row.get(0))
@@ -472,7 +472,7 @@ pub(crate) fn get_missing_blocks<C: ToSql + FromSql>(
     txn: &Transaction,
     cid: C,
 ) -> crate::Result<Vec<C>> {
-    let id = get_or_create_id(&txn, cid)?;
+    let id = get_or_create_id(txn, cid)?;
     let res = txn.prepare_cached(
         r#"
 WITH RECURSIVE
@@ -601,8 +601,8 @@ pub(crate) fn init_db(
     assert_eq!(journal_mode, expected_journal_mode.to_owned());
     // use in_txn so we get the logging
     in_txn(conn, |txn| {
-        if user_version(&txn)? == 0 && table_exists(&txn, "blocks")? {
-            Ok(migrate_v0_v1(&txn)?)
+        if user_version(txn)? == 0 && table_exists(txn, "blocks")? {
+            Ok(migrate_v0_v1(txn)?)
         } else {
             Ok(txn.execute_batch(INIT)?)
         }

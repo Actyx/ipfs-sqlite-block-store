@@ -542,7 +542,7 @@ where
                 for id in expired_temp_pins {
                     delete_temp_pin(txn, id)?;
                 }
-                incremental_gc(&txn, min_blocks, max_duration, size_targets, cache_tracker)
+                incremental_gc(txn, min_blocks, max_duration, size_targets, cache_tracker)
             })
         })?;
         self.config.cache_tracker.blocks_deleted(deleted);
@@ -571,6 +571,8 @@ where
             let result = in_txn(&mut self.conn, move |txn| {
                 Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
             })?;
+            // in tests this doesn’t return results, but in Actyx it raises ExecuteReturnedResults
+            // so we just ignore the outcome
             self.conn.execute("PRAGMA incremental_vacuum;", []).ok();
             Ok(result)
         })
