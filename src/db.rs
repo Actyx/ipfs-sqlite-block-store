@@ -30,6 +30,7 @@ PRAGMA auto_vacuum = 2;
 -- this must be done before changing the database via the CLI!
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
+PRAGMA wal_checkpoint(TRUNCATE);
 -- I tried different even larger values for this. Did not make a difference.
 PRAGMA page_size = 4096;
 "#;
