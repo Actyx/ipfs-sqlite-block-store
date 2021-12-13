@@ -16,7 +16,6 @@ use rusqlite::{
     config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
 };
 use std::{collections::BTreeSet, convert::TryFrom, time::Duration, time::Instant};
-use tracing::*;
 
 use crate::{
     cache::{BlockInfo, CacheTracker},
@@ -122,7 +121,7 @@ fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
 }
 
 fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
-    info!("executing migration from v0 to v1");
+    tracing::info!("executing migration from v0 to v1");
     txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0")?;
     // drop the old refs table, since the content can be extracted from blocks_v0
     txn.execute_batch("DROP TABLE IF EXISTS refs;")?;
@@ -134,7 +133,7 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
     })?;
     for (i, block) in block_iter.enumerate() {
         if num_blocks != 0 && i % 1000 == 0 {
-            info!(
+            tracing::info!(
                 "converting to new blocks, block {} of {} ({}%)",
                 i,
                 num_blocks,
@@ -157,10 +156,10 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
             &mut pin,
         )?;
     }
-    info!("dropping table blocks_v0");
+    tracing::info!("dropping table blocks_v0");
     txn.execute_batch("DROP TABLE blocks_v0")?;
     drop(stmt);
-    info!("migration from v0 to v1 done!");
+    tracing::info!("migration from v0 to v1 done!");
     Ok(())
 }
 
@@ -261,7 +260,7 @@ WHERE
         if !size_targets.exceeded(&stats) {
             break;
         }
-        trace!("deleting id {}", id);
+        tracing::trace!("deleting id {}", id);
         let block_size: Option<(i64, CidBytes)> = block_size_stmt
             .query_row(&[id], |row| Ok((row.get(0)?, row.get(1)?)))
             .optional()?;
@@ -308,14 +307,14 @@ pub(crate) fn incremental_delete_orphaned(
     for id in ids.iter() {
         let dt = t0.elapsed();
         if n >= min_blocks && dt > max_duration {
-            info!(
+            tracing::info!(
                 "stopped incremental delete after {}us and {} blocks",
                 dt.as_micros(),
                 n
             );
             break;
         }
-        trace!("deleting block for id {}", id);
+        tracing::trace!("deleting block for id {}", id);
         delete_stmt.execute([id])?;
         n += 1;
     }
@@ -636,11 +635,11 @@ pub(crate) fn log_execution_time<T, E>(
     let result = (f)();
     let dt = t0.elapsed();
     if result.is_err() {
-        warn!("{} took {}us and failed", msg, dt.as_micros());
+        tracing::warn!("{} took {}us and failed", msg, dt.as_micros());
     } else if dt > expected_duration {
-        info!("{} took {}us", msg, dt.as_micros());
+        tracing::info!("{} took {}us", msg, dt.as_micros());
     } else {
-        debug!("{} took {}us", msg, dt.as_micros());
+        tracing::trace!("{} took {}us", msg, dt.as_micros());
     };
     result
 }
@@ -654,15 +653,15 @@ pub(crate) fn in_txn<T>(
     let result = f(&txn);
     match result {
         Ok(value) => {
-            trace!("committing transaction!");
+            tracing::trace!("committing transaction!");
             if let Err(cause) = txn.commit() {
-                error!("unable to commit transaction! {}", cause);
+                tracing::error!("unable to commit transaction! {}", cause);
                 return Err(cause.into());
             }
             Ok(value)
         }
         Err(cause) => {
-            error!("rolling back transaction! {}", cause);
+            tracing::error!("rolling back transaction! {}", cause);
             Err(cause)
         }
     }
