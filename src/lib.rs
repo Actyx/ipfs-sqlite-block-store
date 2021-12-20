@@ -297,14 +297,16 @@ where
             config.pragma_cache_pages as i64,
             config.pragma_synchronous,
         )?;
-        std::thread::spawn(move || {
-            let config = Config {
-                pragma_synchronous: Synchronous::Normal,
-                ..Config::default()
-            };
-            let conn = Self::create_connection(db_path, &config).unwrap();
-            recompute_store_stats(conn).unwrap();
-        });
+        if let DbPath::File(_) = &db_path {
+            std::thread::spawn(move || {
+                let config = Config {
+                    pragma_synchronous: Synchronous::Normal,
+                    ..Config::default()
+                };
+                let conn = Self::create_connection(db_path, &config).unwrap();
+                recompute_store_stats(conn).unwrap();
+            });
+        }
         if config.cache_tracker.has_persistent_state() {
             let ids = in_txn(&mut conn, Some("get IDs"), get_ids)?;
             config.cache_tracker.retain_ids(&ids);

@@ -20,7 +20,7 @@ use std::{collections::BTreeSet, convert::TryFrom, time::Duration, time::Instant
 use crate::{
     cache::{BlockInfo, CacheTracker},
     cidbytes::CidBytes,
-    SizeTargets, StoreStats, Synchronous,
+    BlockStoreError, SizeTargets, StoreStats, Synchronous,
 };
 
 const PRAGMAS: &str = r#"
@@ -643,6 +643,11 @@ pub(crate) fn init_db(
             txn.execute_batch(INIT)?;
             tracing::debug!("cleaning up temp pins");
             txn.execute_batch(CLEANUP_TEMP_PINS)?;
+            if let Err(BlockStoreError::SqliteError(rusqlite::Error::QueryReturnedNoRows)) =
+                get_store_stats(txn)
+            {
+                txn.execute_batch("INSERT INTO stats VALUES (0, 0);")?;
+            }
             Ok(())
         }
     })?;
