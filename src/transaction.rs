@@ -36,12 +36,12 @@ struct TransactionInfo {
 impl Drop for TransactionInfo {
     fn drop(&mut self) {
         if !self.accessed.is_empty() {
-            let blocks = mem::replace(&mut self.accessed, Vec::new());
+            let blocks = mem::take(&mut self.accessed);
             self.tracker.blocks_accessed(blocks);
         }
         // if the transaction was not committed, we don't report blocks written!
         if self.committed && !self.written.is_empty() {
-            let blocks = mem::replace(&mut self.written, Vec::new());
+            let blocks = mem::take(&mut self.written);
             self.tracker.blocks_written(blocks);
         }
     }
@@ -179,7 +179,7 @@ where
             .iter()
             .map(CidBytes::try_from)
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
-        let res = put_block(self.txn(), &cid_bytes, &block.data(), links, &mut pin0)?;
+        let res = put_block(self.txn(), &cid_bytes, block.data(), links, &mut pin0)?;
         let write_info = WriteInfo::new(
             BlockInfo::new(res.id, block.cid(), block.data().len()),
             res.block_exists,

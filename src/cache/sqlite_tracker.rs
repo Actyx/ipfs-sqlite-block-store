@@ -51,7 +51,7 @@ fn attempt_txn<T>(
     mut conn: impl DerefMut<Target = Connection>,
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
 ) {
-    let result = crate::in_txn(&mut conn, f);
+    let result = crate::in_txn(&mut conn, None, f);
     if let Err(cause) = result {
         tracing::warn!("Unable to execute transaction {}", cause);
     }
@@ -84,12 +84,11 @@ fn get_accessed_bulk(
         Ok((id, time))
     })?;
     // we have no choice but to run through all values in accessed.
-    for row in accessed {
+    for row in accessed.flatten() {
         // only add if a row already exists
-        if let Ok((id, time)) = row {
-            if let Some(value) = result.get_mut(&id) {
-                *value = Some(time);
-            }
+        let (id, time) = row;
+        if let Some(value) = result.get_mut(&id) {
+            *value = Some(time);
         }
     }
     Ok(())

@@ -581,6 +581,8 @@ pub(crate) fn aliases<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<(Vec<u
 }
 
 pub(crate) fn vacuum(conn: &Connection) -> crate::Result<()> {
+    let span = tracing::debug_span!("vacuuming the db");
+    let _enter = span.enter();
     conn.execute("VACUUM;", [])?;
     Ok(())
 }
@@ -591,6 +593,8 @@ pub(crate) fn init_db(
     cache_pages: i64,
     synchronous: Synchronous,
 ) -> anyhow::Result<()> {
+    let span = tracing::debug_span!("initializing db");
+    let _enter = span.enter();
     conn.execute_batch(PRAGMAS)?;
     conn.pragma_update(None, "synchronous", &synchronous.to_string())?;
     conn.pragma_update(None, "cache_pages", &cache_pages)?;
@@ -600,7 +604,7 @@ pub(crate) fn init_db(
     assert_eq!(foreign_keys, 1);
     assert_eq!(journal_mode, expected_journal_mode.to_owned());
     // use in_txn so we get the logging
-    in_txn(conn, |txn| {
+    in_txn(conn, Some("init"), |txn| {
         if user_version(txn)? == 0 && table_exists(txn, "blocks")? {
             Ok(migrate_v0_v1(txn)?)
         } else {
@@ -612,6 +616,8 @@ pub(crate) fn init_db(
 }
 
 pub(crate) fn integrity_check(conn: &Connection) -> crate::Result<Vec<String>> {
+    let span = tracing::debug_span!("db integrity check");
+    let _enter = span.enter();
     let mut stmt = conn.prepare("SELECT integrity_check FROM pragma_integrity_check")?;
     let result = stmt
         .query_map([], |row| row.get(0))?
@@ -647,8 +653,15 @@ pub(crate) fn log_execution_time<T, E>(
 /// execute a statement in a write transaction
 pub(crate) fn in_txn<T>(
     conn: &mut Connection,
+    name: Option<&str>,
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
 ) -> crate::Result<T> {
+    let span = if let Some(name) = name {
+        tracing::debug_span!("transaction `{}`", name)
+    } else {
+        tracing::trace_span!("transaction")
+    };
+    let _enter = span.enter();
     let txn = conn.transaction()?;
     let result = f(&txn);
     match result {

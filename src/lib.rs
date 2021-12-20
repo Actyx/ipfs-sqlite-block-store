@@ -238,7 +238,7 @@ impl StoreStats {
 ///
 /// dropping this handle enqueue the pin for dropping before the next gc.
 pub struct TempPin {
-    id: AtomicI64,
+    id: AtomicI64, // FIXME change to u64
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
 }
 
@@ -297,7 +297,7 @@ where
             config.pragma_cache_pages as i64,
             config.pragma_synchronous,
         )?;
-        let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
+        let ids = in_txn(&mut conn, Some("get IDs"), get_ids)?;
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
@@ -343,7 +343,7 @@ where
                 }
             }),
         )?;
-        let ids = in_txn(&mut conn, |txn| get_ids(txn))?;
+        let ids = in_txn(&mut conn, Some("get ids"), get_ids)?;
         config.cache_tracker.retain_ids(&ids);
         Ok(Self {
             conn,
@@ -537,7 +537,7 @@ where
         let (deleted, complete) = log_execution_time("gc", Duration::from_secs(1), || {
             let size_targets = self.config.size_targets;
             let cache_tracker = &self.config.cache_tracker;
-            in_txn(&mut self.conn, move |txn| {
+            in_txn(&mut self.conn, Some("gc"), move |txn| {
                 // get rid of dropped temp aliases, this should be fast
                 for id in expired_temp_pins {
                     delete_temp_pin(txn, id)?;
@@ -568,7 +568,7 @@ where
         max_duration: Duration,
     ) -> Result<bool> {
         log_execution_time("delete_orphaned", Duration::from_millis(100), || {
-            let result = in_txn(&mut self.conn, move |txn| {
+            let result = in_txn(&mut self.conn, Some("collect blocks"), move |txn| {
                 Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?)
             })?;
             // in tests this doesn’t return results, but in Actyx it raises ExecuteReturnedResults
