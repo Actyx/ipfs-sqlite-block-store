@@ -204,6 +204,10 @@ where
             Ok(())
         });
     }
+
+    fn has_persistent_state(&self) -> bool {
+        true
+    }
 }
 
 #[test]

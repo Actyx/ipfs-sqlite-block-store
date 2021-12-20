@@ -290,15 +290,25 @@ where
 
     pub fn open_path(db_path: DbPath, config: Config) -> crate::Result<Self> {
         let is_memory = db_path.is_memory();
-        let mut conn = Self::create_connection(db_path, &config)?;
+        let mut conn = Self::create_connection(db_path.clone(), &config)?;
         init_db(
             &mut conn,
             is_memory,
             config.pragma_cache_pages as i64,
             config.pragma_synchronous,
         )?;
-        let ids = in_txn(&mut conn, Some("get IDs"), get_ids)?;
-        config.cache_tracker.retain_ids(&ids);
+        std::thread::spawn(move || {
+            let config = Config {
+                pragma_synchronous: Synchronous::Normal,
+                ..Config::default()
+            };
+            let conn = Self::create_connection(db_path, &config).unwrap();
+            recompute_store_stats(conn).unwrap();
+        });
+        if config.cache_tracker.has_persistent_state() {
+            let ids = in_txn(&mut conn, Some("get IDs"), get_ids)?;
+            config.cache_tracker.retain_ids(&ids);
+        }
         Ok(Self {
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),

@@ -59,4 +59,8 @@ where
     fn sort_ids(&self, ids: &mut [i64]) {
         self.inner.lock().sort_ids(ids);
     }
+
+    fn has_persistent_state(&self) -> bool {
+        self.inner.lock().has_persistent_state()
+    }
 }

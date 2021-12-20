@@ -94,6 +94,9 @@ pub trait CacheTracker: Debug + Send + Sync {
     /// this will be called from inside gc
     fn sort_ids(&self, ids: &mut [i64]) {}
 
+    /// indicate whether `retain_ids` should be called on startup
+    fn has_persistent_state(&self) -> bool;
+
     /// notification that only these ids should be retained
     ///
     /// this will be called once during startup
@@ -117,6 +120,10 @@ impl CacheTracker for Arc<dyn CacheTracker> {
         self.as_ref().blocks_deleted(blocks)
     }
 
+    fn has_persistent_state(&self) -> bool {
+        self.as_ref().has_persistent_state()
+    }
+
     fn retain_ids(&self, ids: &[i64]) {
         self.as_ref().retain_ids(ids)
     }
@@ -126,7 +133,11 @@ impl CacheTracker for Arc<dyn CacheTracker> {
 #[derive(Debug)]
 pub struct NoopCacheTracker;
 
-impl CacheTracker for NoopCacheTracker {}
+impl CacheTracker for NoopCacheTracker {
+    fn has_persistent_state(&self) -> bool {
+        false
+    }
+}
 
 /// a cache tracker that just sorts by id, which is the time of first addition of a block
 #[derive(Debug)]
@@ -136,6 +147,9 @@ impl CacheTracker for SortByIdCacheTracker {
     fn sort_ids(&self, ids: &mut [i64]) {
         // a bit faster than stable sort, and obviously for ids it does not matter
         ids.sort_unstable();
+    }
+    fn has_persistent_state(&self) -> bool {
+        false
     }
 }
 
@@ -225,6 +239,10 @@ where
     fn sort_ids(&self, ids: &mut [i64]) {
         let mut cache = self.cache.lock();
         ids.sort_unstable_by_key(move |id| get_key(&mut cache, *id));
+    }
+
+    fn has_persistent_state(&self) -> bool {
+        false
     }
 }
 

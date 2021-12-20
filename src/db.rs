@@ -89,21 +89,16 @@ CREATE TABLE IF NOT EXISTS temp_pins (
 CREATE INDEX IF NOT EXISTS idx_temp_pins_block_id
 ON temp_pins (block_id);
 
--- delete temp aliases that were not dropped because of crash
-DELETE FROM temp_pins;
-
 -- stats table to keep track of total number and size of blocks
 CREATE TABLE IF NOT EXISTS stats (
     count INTEGER NOT NULL,
     size INTEGER NOT NULL
 );
+"#;
 
--- initialize stats from the real values at startup
-DELETE FROM stats;
-INSERT INTO stats (count, size) VALUES (
-    (SELECT COUNT(id) FROM cids, blocks WHERE id = block_id),
-    (SELECT COALESCE(SUM(LENGTH(block)), 0) FROM cids, blocks WHERE id = block_id)
-);
+const CLEANUP_TEMP_PINS: &str = r#"
+-- delete temp aliases that were not dropped because of crash
+DELETE FROM temp_pins;
 "#;
 
 fn user_version(txn: &Transaction) -> rusqlite::Result<u32> {
@@ -126,6 +121,7 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
     // drop the old refs table, since the content can be extracted from blocks_v0
     txn.execute_batch("DROP TABLE IF EXISTS refs;")?;
     txn.execute_batch(INIT)?;
+    txn.execute_batch(CLEANUP_TEMP_PINS)?;
     let num_blocks: i64 = txn.query_row("SELECT COUNT(*) FROM blocks_v0", [], |r| r.get(0))?;
     let mut stmt = txn.prepare("SELECT * FROM blocks_v0")?;
     let block_iter = stmt.query_map([], |row| {
@@ -181,6 +177,42 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
     })
 }
 
+/// recomputes the store stats (should be done at startup to prevent unbounded drift)
+pub(crate) fn recompute_store_stats(mut conn: Connection) -> crate::Result<()> {
+    conn.execute_batch(PRAGMAS)?;
+
+    let span = tracing::debug_span!("check stats");
+    let _enter = span.enter();
+    // first a read-only transaction to determine the true base
+    let txn = conn.transaction()?;
+    let stats = get_store_stats(&txn)?;
+    let truth = compute_store_stats(&txn)?;
+    txn.commit()?;
+
+    tracing::debug!("applying findings");
+    // now compute the correction based on what the above snapshot has calculated
+    let txn = conn.transaction()?;
+    let stats2 = get_store_stats(&txn)?;
+    let new_stats = StoreStats {
+        count: stats2.count - stats.count + truth.count,
+        size: stats2.size - stats.size + truth.size,
+    };
+    if new_stats != stats2 {
+        tracing::info!(
+            "correcting usage stats from {:?} to {:?}",
+            stats2,
+            new_stats
+        );
+        txn.prepare_cached("UPDATE stats SET count = ?, size = ?")?
+            .execute([new_stats.count, new_stats.size])?;
+    } else {
+        tracing::debug!("usage stats were correct");
+    }
+    txn.commit()?;
+
+    Ok(())
+}
+
 /// returns the number and size of blocks, excluding orphaned blocks, from the stats table
 pub(crate) fn get_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
     let (count, size): (i64, i64) = txn
@@ -190,7 +222,6 @@ pub(crate) fn get_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
         count: u64::try_from(count)?,
         size: u64::try_from(size)?,
     };
-    debug_assert_eq!(result, compute_store_stats(txn)?);
     Ok(result)
 }
 
@@ -608,7 +639,11 @@ pub(crate) fn init_db(
         if user_version(txn)? == 0 && table_exists(txn, "blocks")? {
             Ok(migrate_v0_v1(txn)?)
         } else {
-            Ok(txn.execute_batch(INIT)?)
+            tracing::debug!("creating tables and indexes");
+            txn.execute_batch(INIT)?;
+            tracing::debug!("cleaning up temp pins");
+            txn.execute_batch(CLEANUP_TEMP_PINS)?;
+            Ok(())
         }
     })?;
     assert!(conn.db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY)?);
@@ -657,9 +692,9 @@ pub(crate) fn in_txn<T>(
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
 ) -> crate::Result<T> {
     let span = if let Some(name) = name {
-        tracing::debug_span!("transaction `{}`", name)
+        tracing::debug_span!("txn", "{}", name)
     } else {
-        tracing::trace_span!("transaction")
+        tracing::trace_span!("txn")
     };
     let _enter = span.enter();
     let txn = conn.transaction()?;
