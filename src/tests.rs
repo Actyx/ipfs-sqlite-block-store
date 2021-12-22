@@ -456,18 +456,20 @@ fn broken_db() -> anyhow::Result<()> {
 }
 
 #[test]
-fn shared_file() -> anyhow::Result<()> {
-    let tmp = TempDir::new("shared_file")?;
+fn shared_file() {
+    let tmp = TempDir::new("shared_file").unwrap();
     let path = tmp.path().join("test.sqlite");
-    let mut db1 = BlockStore::open_path(DbPath::File(path.clone()), Config::default())?;
-    let mut db2 = BlockStore::open_path(DbPath::File(path), Config::default())?;
+    let mut db1 = BlockStore::open_path(DbPath::File(path.clone()), Config::default()).unwrap();
+    let mut db2 = BlockStore::open_path(DbPath::File(path), Config::default()).unwrap();
 
     for i in 0..10 {
         let block = block(&format!("block-{}", i));
-        db1.put_block(&block, None)?;
-        assert_eq!(db2.get_block(block.cid())?, Some(block.data().to_vec()));
+        db1.put_block(&block, None).unwrap();
+        assert_eq!(
+            db2.get_block(block.cid()).unwrap(),
+            Some(block.data().to_vec())
+        );
     }
-    Ok(())
 }
 
 #[test]

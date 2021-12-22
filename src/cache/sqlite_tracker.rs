@@ -1,4 +1,5 @@
 use super::{BlockInfo, CacheTracker};
+use crate::BlockStoreError;
 use fnv::{FnvHashMap, FnvHashSet};
 use parking_lot::Mutex;
 use rusqlite::{Connection, Transaction};
@@ -51,9 +52,16 @@ fn attempt_txn<T>(
     mut conn: impl DerefMut<Target = Connection>,
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
 ) {
-    let result = crate::in_txn(&mut conn, None, f);
+    let result = conn
+        .transaction()
+        .map_err(BlockStoreError::from)
+        .and_then(|txn| {
+            f(&txn)?;
+            Ok(txn)
+        })
+        .and_then(|txn| txn.commit().map_err(Into::into));
     if let Err(cause) = result {
-        tracing::warn!("Unable to execute transaction {}", cause);
+        tracing::warn!("Unable to execute transaction: {}", cause);
     }
 }
 

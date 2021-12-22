@@ -13,7 +13,8 @@
 //!    to be complete.
 use libipld::{Cid, DefaultParams};
 use rusqlite::{
-    config::DbConfig, params, types::FromSql, Connection, OptionalExtension, ToSql, Transaction,
+    config::DbConfig, params, types::FromSql, Connection, Error::SqliteFailure,
+    ErrorCode::DatabaseBusy, OptionalExtension, ToSql, Transaction,
 };
 use std::{collections::BTreeSet, convert::TryFrom, time::Duration, time::Instant};
 
@@ -122,6 +123,11 @@ fn migrate_v0_v1(txn: &Transaction) -> anyhow::Result<()> {
     txn.execute_batch("DROP TABLE IF EXISTS refs;")?;
     txn.execute_batch(INIT)?;
     txn.execute_batch(CLEANUP_TEMP_PINS)?;
+    if let Err(BlockStoreError::SqliteError(rusqlite::Error::QueryReturnedNoRows)) =
+        get_store_stats(txn)
+    {
+        txn.execute_batch("INSERT INTO stats VALUES (0, 0);")?;
+    }
     let num_blocks: i64 = txn.query_row("SELECT COUNT(*) FROM blocks_v0", [], |r| r.get(0))?;
     let mut stmt = txn.prepare("SELECT * FROM blocks_v0")?;
     let block_iter = stmt.query_map([], |row| {
@@ -181,8 +187,7 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
 pub(crate) fn recompute_store_stats(mut conn: Connection) -> crate::Result<()> {
     conn.execute_batch(PRAGMAS)?;
 
-    let span = tracing::debug_span!("check stats");
-    let _enter = span.enter();
+    let _span = tracing::debug_span!("check stats").entered();
     // first a read-only transaction to determine the true base
     let txn = conn.transaction()?;
     let stats = get_store_stats(&txn)?;
@@ -269,11 +274,9 @@ WHERE
     // min_blocks will ensure that we get some work done even if the id query takes too long
     let t0 = Instant::now();
     // log execution time of the non-interruptible query that computes the set of ids to delete
-    let mut ids = log_execution_time("gc_id_query", Duration::from_secs(1), || {
-        id_query
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<i64>>>()
-    })?;
+    let mut ids = id_query
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
     // give the cache tracker the opportunity to sort the non-pinned ids by value
     cache_tracker.sort_ids(&mut ids);
     let mut block_size_stmt = txn.prepare_cached(
@@ -326,13 +329,10 @@ pub(crate) fn incremental_delete_orphaned(
     max_duration: Duration,
 ) -> rusqlite::Result<bool> {
     let t0 = Instant::now();
-    let ids: Vec<i64> = log_execution_time("determine_orphaned", Duration::from_secs(1), || {
-        txn.prepare_cached(
-            "SELECT block_id FROM blocks WHERE block_id NOT IN (SELECT id FROM cids)",
-        )?
+    let ids: Vec<i64> = txn
+        .prepare_cached("SELECT block_id FROM blocks WHERE block_id NOT IN (SELECT id FROM cids)")?
         .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()
-    })?;
+        .collect::<rusqlite::Result<_>>()?;
     let mut delete_stmt = txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?")?;
     let mut n = 0;
     for id in ids.iter() {
@@ -401,7 +401,7 @@ pub(crate) fn put_block<C: ToSql>(
     links: impl IntoIterator<Item = C>,
     pin: &mut Option<i64>,
 ) -> crate::Result<PutBlockResult> {
-    let id = get_or_create_id(txn, &key)?;
+    let id = get_or_create_id(txn, key)?;
     let block_exists = txn
         .prepare_cached("SELECT 1 FROM blocks WHERE block_id = ?")?
         .query_row([id], |_| Ok(()))
@@ -612,8 +612,7 @@ pub(crate) fn aliases<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<(Vec<u
 }
 
 pub(crate) fn vacuum(conn: &Connection) -> crate::Result<()> {
-    let span = tracing::debug_span!("vacuuming the db");
-    let _enter = span.enter();
+    let _span = tracing::debug_span!("vacuuming the db").entered();
     conn.execute("VACUUM;", [])?;
     Ok(())
 }
@@ -624,8 +623,7 @@ pub(crate) fn init_db(
     cache_pages: i64,
     synchronous: Synchronous,
 ) -> anyhow::Result<()> {
-    let span = tracing::debug_span!("initializing db");
-    let _enter = span.enter();
+    let _span = tracing::debug_span!("initializing db").entered();
     conn.execute_batch(PRAGMAS)?;
     conn.pragma_update(None, "synchronous", &synchronous.to_string())?;
     conn.pragma_update(None, "cache_pages", &cache_pages)?;
@@ -635,7 +633,7 @@ pub(crate) fn init_db(
     assert_eq!(foreign_keys, 1);
     assert_eq!(journal_mode, expected_journal_mode.to_owned());
     // use in_txn so we get the logging
-    in_txn(conn, Some("init"), |txn| {
+    in_txn(conn, Some(("init", Duration::from_secs(1))), |txn| {
         if user_version(txn)? == 0 && table_exists(txn, "blocks")? {
             Ok(migrate_v0_v1(txn)?)
         } else {
@@ -656,8 +654,7 @@ pub(crate) fn init_db(
 }
 
 pub(crate) fn integrity_check(conn: &Connection) -> crate::Result<Vec<String>> {
-    let span = tracing::debug_span!("db integrity check");
-    let _enter = span.enter();
+    let _span = tracing::debug_span!("db integrity check").entered();
     let mut stmt = conn.prepare("SELECT integrity_check FROM pragma_integrity_check")?;
     let result = stmt
         .query_map([], |row| row.get(0))?
@@ -672,50 +669,43 @@ pub(crate) fn integrity_check(conn: &Connection) -> crate::Result<Vec<String>> {
 /// just at debug level if the operation is quick and successful.
 ///
 /// this is an attempt to avoid spamming the log with lots of irrelevant info.
-pub(crate) fn log_execution_time<T, E>(
-    msg: &str,
-    expected_duration: Duration,
-    f: impl FnOnce() -> std::result::Result<T, E>,
-) -> std::result::Result<T, E> {
-    let t0 = Instant::now();
-    let result = (f)();
-    let dt = t0.elapsed();
-    if result.is_err() {
-        tracing::warn!("{} took {}us and failed", msg, dt.as_micros());
-    } else if dt > expected_duration {
-        tracing::info!("{} took {}us", msg, dt.as_micros());
-    } else {
-        tracing::trace!("{} took {}us", msg, dt.as_micros());
-    };
-    result
-}
-
 /// execute a statement in a write transaction
 pub(crate) fn in_txn<T>(
     conn: &mut Connection,
-    name: Option<&str>,
-    f: impl FnOnce(&Transaction) -> crate::Result<T>,
+    name: Option<(&str, Duration)>,
+    mut f: impl FnMut(&Transaction) -> crate::Result<T>,
 ) -> crate::Result<T> {
-    let span = if let Some(name) = name {
-        tracing::debug_span!("txn", "{}", name)
+    let _span = if let Some((name, _)) = name {
+        tracing::debug_span!("txn", "{}", name).entered()
     } else {
-        tracing::trace_span!("txn")
+        tracing::trace_span!("txn").entered()
     };
-    let _enter = span.enter();
-    let txn = conn.transaction()?;
-    let result = f(&txn);
-    match result {
-        Ok(value) => {
-            tracing::trace!("committing transaction!");
-            if let Err(cause) = txn.commit() {
-                tracing::error!("unable to commit transaction! {}", cause);
-                return Err(cause.into());
+    let started = Instant::now();
+    loop {
+        let txn = conn.transaction()?;
+        let result = f(&txn);
+        let result = result.and_then(|t| {
+            txn.commit()?;
+            Ok(t)
+        });
+        match result {
+            Ok(value) => {
+                if let Some((name, expected)) = name {
+                    let dt = started.elapsed();
+                    if dt > expected {
+                        tracing::info!("{} took {}ms", name, dt.as_millis());
+                    }
+                }
+                break Ok(value);
             }
-            Ok(value)
-        }
-        Err(cause) => {
-            tracing::error!("rolling back transaction! {}", cause);
-            Err(cause)
+            Err(BlockStoreError::SqliteError(SqliteFailure(e, _))) if e.code == DatabaseBusy => {
+                // this can be retried
+                tracing::debug!("retrying transaction");
+            }
+            Err(cause) => {
+                tracing::error!("transaction rolled back! {}", cause);
+                break Err(cause);
+            }
         }
     }
 }
