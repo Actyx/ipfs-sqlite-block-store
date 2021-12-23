@@ -74,10 +74,7 @@ use std::{
     mem,
     ops::DerefMut,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 use tracing::*;
@@ -215,7 +212,6 @@ pub struct BlockStore<S> {
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
     db_path: DbPath,
-    in_mem_name: usize,
     _s: PhantomData<S>,
 }
 
@@ -276,18 +272,12 @@ impl Drop for TempPin {
     }
 }
 
-static IN_MEM_NAME: AtomicUsize = AtomicUsize::new(0);
-
 impl<S> BlockStore<S>
 where
     S: StoreParams,
     Ipld: References<S::Codecs>,
 {
-    fn create_connection(
-        db_path: DbPath,
-        config: &Config,
-        in_mem_name: usize,
-    ) -> crate::Result<rusqlite::Connection> {
+    fn create_connection(db_path: DbPath, config: &Config) -> crate::Result<rusqlite::Connection> {
         let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         flags |= if config.read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -298,11 +288,7 @@ where
             flags |= OpenFlags::SQLITE_OPEN_CREATE
         }
         let conn = match db_path {
-            DbPath::Memory => Connection::open_with_flags(
-                format!("ipfs-sqlite-block-store-{}", in_mem_name),
-                OpenFlags::SQLITE_OPEN_MEMORY | OpenFlags::SQLITE_OPEN_READ_WRITE,
-            )
-            .ctx("opening in-memory DB")?,
+            DbPath::Memory => Connection::open_in_memory().ctx("opening in-memory DB")?,
             DbPath::File(path) => Connection::open_with_flags(path, flags).ctx("opening DB")?,
         };
         Ok(conn)
@@ -310,8 +296,10 @@ where
 
     pub fn open_path(db_path: DbPath, config: Config) -> crate::Result<Self> {
         let is_memory = db_path.is_memory();
-        let in_mem_name = IN_MEM_NAME.fetch_add(1, Ordering::SeqCst);
-        let mut conn = Self::create_connection(db_path.clone(), &config, in_mem_name)?;
+        let mut conn = Self::create_connection(db_path.clone(), &config)?;
+        // this needs to be done only once, and before the first transaction
+        conn.execute_batch("PRAGMA journal_mode = WAL")
+            .ctx("setting WAL mode")?;
         init_db(
             &mut conn,
             is_memory,
@@ -323,7 +311,6 @@ where
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             db_path,
-            in_mem_name,
             _s: PhantomData,
         };
         if !is_memory {
@@ -349,20 +336,26 @@ where
     ///
     /// This allows you to perform operations in parallel.
     pub fn additional_connection(&self) -> crate::Result<Self> {
-        let mut conn =
-            Self::create_connection(self.db_path.clone(), &self.config, self.in_mem_name)?;
+        if self.db_path.is_memory() {
+            return Err(BlockStoreError::NoAdditionalInMemory);
+        }
+        let mut conn = Self::create_connection(self.db_path.clone(), &self.config)?;
         init_pragmas(
             &mut conn,
             self.db_path.is_memory(),
             self.config.pragma_cache_pages as i64,
-            self.config.pragma_synchronous,
         )?;
+        conn.pragma_update(
+            None,
+            "synchronous",
+            &self.config.pragma_synchronous.to_string(),
+        )
+        .ctx("setting synchronous mode")?;
         Ok(Self {
             conn,
             expired_temp_pins: self.expired_temp_pins.clone(),
             config: self.config.clone(),
             db_path: self.db_path.clone(),
-            in_mem_name: self.in_mem_name,
             _s: PhantomData,
         })
     }
@@ -384,8 +377,7 @@ where
     /// This will create a writeable in-memory database that is initialized with the content
     /// of the file at the given path.
     pub fn open_test(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
-        let in_mem_name = IN_MEM_NAME.fetch_add(1, Ordering::SeqCst);
-        let mut conn = Self::create_connection(DbPath::Memory, &config, in_mem_name)?;
+        let mut conn = Self::create_connection(DbPath::Memory, &config)?;
         debug!(
             "Restoring in memory database from {}",
             path.as_ref().display()
@@ -416,27 +408,26 @@ where
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             db_path: DbPath::Memory,
-            in_mem_name,
             _s: PhantomData,
         })
     }
 
-    pub fn backup(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.conn
-            .backup(DatabaseName::Main, path, None)
-            .ctx("backing up DB")
+    pub fn backup(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        in_txn(&mut self.conn, None, move |txn| {
+            txn.backup(DatabaseName::Main, path.as_ref(), None)
+                .ctx("backing up DB")
+        })
     }
 
-    pub fn flush(&self) -> crate::Result<()> {
-        // TODO: check if this works! We are always in WAL mode.
-        // https://www.sqlite.org/pragma.html#pragma_wal_checkpoint
-        self.conn
-            .pragma_update(None, "wal_checkpoint", &"TRUNCATE")
-            .ctx("flushing WAL")
+    pub fn flush(&mut self) -> crate::Result<()> {
+        in_txn(&mut self.conn, None, |txn| {
+            txn.pragma_update(None, "wal_checkpoint", &"TRUNCATE")
+                .ctx("flushing WAL")
+        })
     }
 
-    pub fn integrity_check(&self) -> crate::Result<()> {
-        let result = integrity_check(&self.conn)?;
+    pub fn integrity_check(&mut self) -> crate::Result<()> {
+        let result = integrity_check(&mut self.conn)?;
         if result == vec!["ok".to_owned()] {
             Ok(())
         } else {
@@ -462,7 +453,7 @@ where
     ///
     /// This may take a while, blocking all other writes to the store.
     pub fn vacuum(&mut self) -> Result<()> {
-        vacuum(&self.conn)
+        vacuum(&mut self.conn)
     }
 
     /// Perform maintenance on the TempPins

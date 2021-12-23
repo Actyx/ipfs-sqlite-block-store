@@ -17,6 +17,8 @@ pub enum BlockStoreError {
         _0
     )]
     TryFromIntError(std::num::TryFromIntError, &'static str),
+    #[display(fmt = "cannot open additional connection for in-memory DB")]
+    NoAdditionalInMemory,
     /// Other error
     Other(anyhow::Error),
 }
@@ -40,6 +42,7 @@ impl std::error::Error for BlockStoreError {
             BlockStoreError::CidError(e) => Some(e),
             BlockStoreError::TryFromIntError(e, _) => Some(e),
             BlockStoreError::Other(e) => Some(e.as_ref()),
+            BlockStoreError::NoAdditionalInMemory => None,
         }
     }
 }

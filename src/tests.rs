@@ -454,12 +454,12 @@ fn broken_db() -> anyhow::Result<()> {
     let tmp = TempDir::new("broken_db")?;
     let path = tmp.path().join("mini.sqlite");
     std::fs::copy("test-data/mini.sqlite", &path)?;
-    let store = BlockStore::open_path(DbPath::File(path), Config::default())?;
+    let mut store = BlockStore::open_path(DbPath::File(path), Config::default())?;
     assert!(store.integrity_check().is_ok());
 
     let path = tmp.path().join("broken.sqlite");
     std::fs::copy("test-data/broken.sqlite", &path)?;
-    let store = BlockStore::open_path(DbPath::File(path), Config::default())?;
+    let mut store = BlockStore::open_path(DbPath::File(path), Config::default())?;
     assert!(store.integrity_check().is_err());
     Ok(())
 }

@@ -221,33 +221,35 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
 pub(crate) fn recompute_store_stats(conn: &mut Connection) -> crate::Result<()> {
     let _span = tracing::debug_span!("check stats").entered();
     // first a read-only transaction to determine the true base
-    let txn = c!("beginning transaction" => conn.transaction());
-    let stats = get_store_stats(&txn)?;
-    let truth = compute_store_stats(&txn)?;
-    c!("committing transaction" => txn.commit());
+    let (stats, truth) = in_txn(conn, None, |txn| {
+        let stats = get_store_stats(txn)?;
+        let truth = compute_store_stats(txn)?;
+        Ok((stats, truth))
+    })?;
 
     tracing::debug!("applying findings");
     // now compute the correction based on what the above snapshot has calculated
-    let txn = c!("beginning transaction" => conn.transaction());
-    let stats2 = get_store_stats(&txn)?;
-    let new_stats = StoreStats {
-        count: stats2.count - stats.count + truth.count,
-        size: stats2.size - stats.size + truth.size,
-    };
-    if new_stats != stats2 {
-        tracing::info!(
-            "correcting usage stats from {:?} to {:?}",
-            stats2,
-            new_stats
-        );
-        txn.prepare_cached("UPDATE stats SET count = ?, size = ?")
-            .ctx("updating stats (prep)")?
-            .execute([new_stats.count, new_stats.size])
-            .ctx("updating stats")?;
-    } else {
-        tracing::debug!("usage stats were correct");
-    }
-    c!("committing transaction" => txn.commit());
+    in_txn(conn, None, |txn| {
+        let stats2 = get_store_stats(txn)?;
+        let new_stats = StoreStats {
+            count: stats2.count - stats.count + truth.count,
+            size: stats2.size - stats.size + truth.size,
+        };
+        if new_stats != stats2 {
+            tracing::info!(
+                "correcting usage stats from {:?} to {:?}",
+                stats2,
+                new_stats
+            );
+            txn.prepare_cached("UPDATE stats SET count = ?, size = ?")
+                .ctx("updating stats (prep)")?
+                .execute([new_stats.count, new_stats.size])
+                .ctx("updating stats")?;
+        } else {
+            tracing::debug!("usage stats were correct");
+        }
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -679,7 +681,7 @@ pub(crate) fn aliases<C: FromSql>(txn: &Transaction) -> crate::Result<Vec<(Vec<u
         .ctx("parsing aliases")
 }
 
-pub(crate) fn vacuum(conn: &Connection) -> crate::Result<()> {
+pub(crate) fn vacuum(conn: &mut Connection) -> crate::Result<()> {
     let _span = tracing::debug_span!("vacuuming the db").entered();
     conn.execute("VACUUM;", []).ctx("running VACUUM")?;
     Ok(())
@@ -689,10 +691,8 @@ pub(crate) fn init_pragmas(
     conn: &mut Connection,
     is_memory: bool,
     cache_pages: i64,
-    synchronous: Synchronous,
 ) -> crate::Result<()> {
     c!("running pragmas" => conn.execute_batch(PRAGMAS));
-    c!("setting synchronous" => conn.pragma_update(None, "synchronous", &synchronous.to_string()));
     c!("setting cache_pages" => conn.pragma_update(None, "cache_pages", &cache_pages));
 
     let foreign_keys: i64 = c!("getting foreign_keys" => conn.pragma_query_value(None, "foreign_keys", |row| row.get(0)));
@@ -719,8 +719,12 @@ pub(crate) fn init_db(
     synchronous: Synchronous,
 ) -> crate::Result<()> {
     let _span = tracing::debug_span!("initializing db").entered();
-    init_pragmas(conn, is_memory, cache_pages, synchronous)?;
-    // use in_txn so we get the logging
+
+    // can’t be done inside a transaction
+    init_pragmas(conn, is_memory, cache_pages)?;
+    conn.pragma_update(None, "synchronous", &synchronous.to_string())
+        .ctx("setting Synchronous mode")?;
+
     in_txn(conn, Some(("init", Duration::from_secs(1))), |txn| {
         if c!("getting user_version" => user_version(txn)) == 0
             && c!("checking table `blocks`" => table_exists(txn, "blocks"))
@@ -738,13 +742,15 @@ pub(crate) fn init_db(
     })
 }
 
-pub(crate) fn integrity_check(conn: &Connection) -> crate::Result<Vec<String>> {
+pub(crate) fn integrity_check(conn: &mut Connection) -> crate::Result<Vec<String>> {
     let _span = tracing::debug_span!("db integrity check").entered();
-    let mut stmt = c!("checking sqlite integrity (prep)" => conn.prepare("SELECT integrity_check FROM pragma_integrity_check"));
-    let result = c!("checking sqlite integrity" => stmt.query_map([], |row| row.get(0)))
-        .collect::<rusqlite::Result<Vec<String>>>()
-        .ctx("parsing sqlite integrity_check results")?;
-    Ok(result)
+    in_txn(conn, None, |txn| {
+        let mut stmt = c!("checking sqlite integrity (prep)" => txn.prepare("SELECT integrity_check FROM pragma_integrity_check"));
+        let result = c!("checking sqlite integrity" => stmt.query_map([], |row| row.get(0)))
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .ctx("parsing sqlite integrity_check results")?;
+        Ok(result)
+    })
 }
 
 /// helper to log execution time of a block of code that returns a result
@@ -786,21 +792,12 @@ pub(crate) fn in_txn<T>(
                 break Ok(value);
             }
             Err(BlockStoreError::SqliteError(SqliteFailure(e, _), _)) if e.code == DatabaseBusy => {
-                if attempts > 3 {
-                    if let Some((name, _)) = name {
-                        tracing::warn!(
-                            "transaction {} getting starved ({} attempts so far, {}ms)",
-                            name,
-                            attempts,
-                            started.elapsed().as_millis()
-                        );
-                    } else {
-                        tracing::warn!(
-                            "transaction getting starved ({} attempts so far, {}ms)",
-                            attempts,
-                            started.elapsed().as_millis()
-                        );
-                    }
+                if attempts > 3 && started.elapsed().as_millis() > 100 {
+                    tracing::warn!(
+                        "getting starved ({} attempts so far, {}ms)",
+                        attempts,
+                        started.elapsed().as_millis()
+                    );
                 } else {
                     tracing::debug!("retrying transaction {:?}", name);
                 }
