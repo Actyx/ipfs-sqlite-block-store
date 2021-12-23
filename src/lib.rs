@@ -61,11 +61,13 @@ mod transaction;
 
 use cache::{CacheTracker, NoopCacheTracker};
 use db::*;
+use error::Context;
 pub use error::{BlockStoreError, Result};
 use libipld::{codec::References, store::StoreParams, Block, Cid, Ipld};
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
+    collections::HashSet,
     fmt,
     iter::FromIterator,
     marker::PhantomData,
@@ -73,7 +75,7 @@ use std::{
     ops::DerefMut,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicI64, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -158,7 +160,7 @@ impl fmt::Display for Synchronous {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     size_targets: SizeTargets,
     cache_tracker: Arc<dyn CacheTracker>,
@@ -212,6 +214,8 @@ pub struct BlockStore<S> {
     conn: Connection,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
+    db_path: DbPath,
+    in_mem_name: usize,
     _s: PhantomData<S>,
 }
 
@@ -233,22 +237,32 @@ impl StoreStats {
     }
 }
 
-// do not implement Clone for this!
 /// a handle that contains a temporary pin
 ///
-/// dropping this handle enqueue the pin for dropping before the next gc.
+/// Dropping this handle enqueues the pin for dropping before the next gc.
+// do not implement Clone for this!
 pub struct TempPin {
-    id: AtomicI64, // FIXME change to u64
+    id: i64,
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
+}
+
+impl TempPin {
+    fn new(expired_temp_pins: Arc<Mutex<Vec<i64>>>) -> Self {
+        Self {
+            id: 0,
+            expired_temp_pins,
+        }
+    }
 }
 
 /// dump the temp alias id so you can find it in the database
 impl fmt::Debug for TempPin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let id = self.id.load(Ordering::SeqCst);
         let mut builder = f.debug_struct("TempAlias");
-        if id > 0 {
-            builder.field("id", &id);
+        if self.id > 0 {
+            builder.field("id", &self.id);
+        } else {
+            builder.field("unused", &true);
         }
         builder.finish()
     }
@@ -256,22 +270,24 @@ impl fmt::Debug for TempPin {
 
 impl Drop for TempPin {
     fn drop(&mut self) {
-        let id = self.id.get_mut();
-        let alias = *id;
-        if alias > 0 {
-            // not sure if we have to guard against double drop, but it certainly does not hurt.
-            *id = 0;
-            self.expired_temp_pins.lock().push(alias);
+        if self.id > 0 {
+            self.expired_temp_pins.lock().push(self.id);
         }
     }
 }
+
+static IN_MEM_NAME: AtomicUsize = AtomicUsize::new(0);
 
 impl<S> BlockStore<S>
 where
     S: StoreParams,
     Ipld: References<S::Codecs>,
 {
-    fn create_connection(db_path: DbPath, config: &Config) -> crate::Result<rusqlite::Connection> {
+    fn create_connection(
+        db_path: DbPath,
+        config: &Config,
+        in_mem_name: usize,
+    ) -> crate::Result<rusqlite::Connection> {
         let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         flags |= if config.read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -282,54 +298,71 @@ where
             flags |= OpenFlags::SQLITE_OPEN_CREATE
         }
         let conn = match db_path {
-            DbPath::Memory => Connection::open_in_memory()?,
-            DbPath::File(path) => Connection::open_with_flags(path, flags)?,
+            DbPath::Memory => Connection::open_with_flags(
+                format!("ipfs-sqlite-block-store-{}", in_mem_name),
+                OpenFlags::SQLITE_OPEN_MEMORY | OpenFlags::SQLITE_OPEN_READ_WRITE,
+            )
+            .ctx("opening in-memory DB")?,
+            DbPath::File(path) => Connection::open_with_flags(path, flags).ctx("opening DB")?,
         };
         Ok(conn)
     }
 
     pub fn open_path(db_path: DbPath, config: Config) -> crate::Result<Self> {
         let is_memory = db_path.is_memory();
-        let mut conn = Self::create_connection(db_path.clone(), &config)?;
+        let in_mem_name = IN_MEM_NAME.fetch_add(1, Ordering::SeqCst);
+        let mut conn = Self::create_connection(db_path.clone(), &config, in_mem_name)?;
         init_db(
             &mut conn,
             is_memory,
             config.pragma_cache_pages as i64,
             config.pragma_synchronous,
         )?;
-        if let DbPath::File(_) = &db_path {
+        let mut this = Self {
+            conn,
+            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
+            config,
+            db_path,
+            in_mem_name,
+            _s: PhantomData,
+        };
+        if !is_memory {
+            let mut conn = this.additional_connection()?;
             std::thread::spawn(move || {
-                let config = Config {
-                    pragma_synchronous: Synchronous::Normal,
-                    ..Config::default()
-                };
-                let conn = match Self::create_connection(db_path, &config) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!(
-                            "cannot create second store connection to recompute stats: {}",
-                            e
-                        );
-                        return;
-                    }
-                };
-                if let Err(e) = recompute_store_stats(conn) {
+                if let Err(e) = recompute_store_stats(&mut conn.conn) {
                     tracing::error!("cannot recompute store stats: {}", e);
                 }
             });
         }
-        if config.cache_tracker.has_persistent_state() {
+        if this.config.cache_tracker.has_persistent_state() {
             let ids = in_txn(
-                &mut conn,
+                &mut this.conn,
                 Some(("get IDs", Duration::from_secs(1))),
                 get_ids,
             )?;
-            config.cache_tracker.retain_ids(&ids);
+            this.config.cache_tracker.retain_ids(&ids);
         }
+        Ok(this)
+    }
+
+    /// Create another connection to the underlying database
+    ///
+    /// This allows you to perform operations in parallel.
+    pub fn additional_connection(&self) -> crate::Result<Self> {
+        let mut conn =
+            Self::create_connection(self.db_path.clone(), &self.config, self.in_mem_name)?;
+        init_pragmas(
+            &mut conn,
+            self.db_path.is_memory(),
+            self.config.pragma_cache_pages as i64,
+            self.config.pragma_synchronous,
+        )?;
         Ok(Self {
             conn,
-            expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
-            config,
+            expired_temp_pins: self.expired_temp_pins.clone(),
+            config: self.config.clone(),
+            db_path: self.db_path.clone(),
+            in_mem_name: self.in_mem_name,
             _s: PhantomData,
         })
     }
@@ -351,7 +384,8 @@ where
     /// This will create a writeable in-memory database that is initialized with the content
     /// of the file at the given path.
     pub fn open_test(path: impl AsRef<Path>, config: Config) -> crate::Result<Self> {
-        let mut conn = Self::create_connection(DbPath::Memory, &config)?;
+        let in_mem_name = IN_MEM_NAME.fetch_add(1, Ordering::SeqCst);
+        let mut conn = Self::create_connection(DbPath::Memory, &config, in_mem_name)?;
         debug!(
             "Restoring in memory database from {}",
             path.as_ref().display()
@@ -369,7 +403,8 @@ where
                     debug!("Restoring: {} %", percent);
                 }
             }),
-        )?;
+        )
+        .ctx("restoring test DB from backup")?;
         let ids = in_txn(
             &mut conn,
             Some(("get ids", Duration::from_secs(1))),
@@ -380,14 +415,24 @@ where
             conn,
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
+            db_path: DbPath::Memory,
+            in_mem_name,
             _s: PhantomData,
         })
+    }
+
+    pub fn backup(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.conn
+            .backup(DatabaseName::Main, path, None)
+            .ctx("backing up DB")
     }
 
     pub fn flush(&self) -> crate::Result<()> {
         // TODO: check if this works! We are always in WAL mode.
         // https://www.sqlite.org/pragma.html#pragma_wal_checkpoint
-        Ok(self.conn.pragma_update(None, "wal_checkpoint", &"FULL")?)
+        self.conn
+            .pragma_update(None, "wal_checkpoint", &"TRUNCATE")
+            .ctx("flushing WAL")
     }
 
     pub fn integrity_check(&self) -> crate::Result<()> {
@@ -398,8 +443,10 @@ where
             let error_text = result.join(";");
             Err(crate::error::BlockStoreError::SqliteError(
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(11), Some(error_text)),
+                "checking integrity",
             ))
         }
+        // FIXME add actual integrity check on the stored blocks
     }
 
     pub fn transaction(&mut self) -> Transaction<'_, S> {
@@ -408,96 +455,74 @@ where
 
     /// Get a temporary alias for safely adding blocks to the store
     pub fn temp_pin(&self) -> TempPin {
-        TempPin {
-            id: AtomicI64::new(0),
-            expired_temp_pins: self.expired_temp_pins.clone(),
-        }
+        TempPin::new(self.expired_temp_pins.clone())
     }
 
+    /// Run a full VACUUM on the SQLITE database
+    ///
+    /// This may take a while, blocking all other writes to the store.
     pub fn vacuum(&mut self) -> Result<()> {
         vacuum(&self.conn)
     }
 
-    /// do a full garbage collection
+    /// Perform maintenance on the TempPins
     ///
-    /// for a large block store, this can take several seconds to minutes. If that is not acceptable,
-    /// consider using incremental gc.
+    /// This is done automatically upon every (incremental) GC, so you normally don’t need to call this.
+    pub fn cleanup_temp_pins(&mut self) -> Result<()> {
+        // atomically grab the expired_temp_pins until now
+        let expired_temp_pins = mem::take(self.expired_temp_pins.lock().deref_mut());
+        in_txn(
+            &mut self.conn,
+            Some(("dropping expired temp_pins", Duration::from_millis(100))),
+            move |txn| {
+                // get rid of dropped temp aliases, this should be fast
+                for id in expired_temp_pins.iter() {
+                    delete_temp_pin(txn, *id)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    /// Perform full GC
+    ///
+    /// This is the same as running incremental GC without limits, plus a full SQLITE VACUUM.
     pub fn gc(&mut self) -> Result<()> {
-        loop {
-            let complete = self.incremental_gc(20000, Duration::from_secs(1))?;
-            while !self.incremental_delete_orphaned(20000, Duration::from_secs(1))? {}
-            if complete {
-                break;
-            }
-        }
+        self.cleanup_temp_pins()?;
+        incremental_gc(
+            &mut self.conn,
+            usize::MAX,
+            Duration::from_secs(u32::MAX.into()),
+            self.config.size_targets,
+            &self.config.cache_tracker,
+        )?;
+        self.vacuum()?;
         Ok(())
     }
+
     /// Perform an incremental garbage collection.
     ///
     /// Will collect unpinned blocks until either the size targets are met again, or at minimum
     /// `min_blocks` blocks are collected. Then it will continue connecting blocks until `max_duration`
     /// is elapsed.
     ///
-    /// Note that this might significantly exceed `max_duration` for various reasons. Also note that
-    /// when doing incremental gc, the actual blocks are not yet deleted. So a call to this method
-    /// should usually be followed by a call to incremental_delete_orphaned.
-    ///
-    /// - `min_blocks` the minium number of blocks to collect in any case
-    /// - `max_duration` the maximum duration that should be spent on gc
+    /// Note that this might significantly exceed `max_duration` for various reasons.
     ///
     /// Returns true if either size targets are met or there are no unpinned blocks left.
     pub fn incremental_gc(&mut self, min_blocks: usize, max_duration: Duration) -> Result<bool> {
-        // atomically grab the expired_temp_pins until now
-        let expired_temp_pins = {
-            let mut result = Vec::new();
-            mem::swap(self.expired_temp_pins.lock().deref_mut(), &mut result);
-            result
-        };
-
-        let size_targets = self.config.size_targets;
-        let cache_tracker = &self.config.cache_tracker;
-        let (deleted, complete) = in_txn(
+        self.cleanup_temp_pins()?;
+        let ret = incremental_gc(
             &mut self.conn,
-            Some(("gc", Duration::from_secs(1))),
-            move |txn| {
-                // get rid of dropped temp aliases, this should be fast
-                for id in expired_temp_pins.iter() {
-                    delete_temp_pin(txn, *id)?;
-                }
-                incremental_gc(txn, min_blocks, max_duration, size_targets, cache_tracker)
-            },
+            min_blocks,
+            max_duration,
+            self.config.size_targets,
+            &self.config.cache_tracker,
         )?;
-        self.config.cache_tracker.blocks_deleted(deleted);
-        Ok(complete)
-    }
-    /// Incrementally delete orphaned blocks
-    ///
-    /// Orphaned blocks are blocks for which we have deleted the metadata in `incremental_gc`.
-    ///
-    /// Will delete orphaned blocks until either all orphaned blocks are deleted, or at minimum
-    /// `min_blocks` blocks are deleted. Then it will continue deleting blocks until `max_duration`
-    /// is elapsed.
-    ///
-    /// Note that this might significantly exceed `max_duration` for various reasons.
-    ///
-    /// - `min_blocks` the minium number of blocks to delete in any case
-    /// - `max_duration` the maximum duration that should be spent on gc
-    ///
-    /// Returns true if all orphaned blocks are deleted
-    pub fn incremental_delete_orphaned(
-        &mut self,
-        min_blocks: usize,
-        max_duration: Duration,
-    ) -> Result<bool> {
-        let result = in_txn(
-            &mut self.conn,
-            Some(("collect blocks", Duration::from_millis(100))),
-            move |txn| Ok(incremental_delete_orphaned(txn, min_blocks, max_duration)?),
-        )?;
-        // in tests this doesn’t return results, but in Actyx it raises ExecuteReturnedResults
-        // so we just ignore the outcome
-        self.conn.execute("PRAGMA incremental_vacuum;", []).ok();
-        Ok(result)
+        in_txn(&mut self.conn, None, |txn| {
+            txn.execute_batch("PRAGMA incremental_vacuum")
+                .ctx("incremental vacuum")
+        })?;
+        Ok(ret)
     }
 }
 
@@ -522,13 +547,13 @@ where
         alias(name: impl AsRef<[u8]>, link: Option<&Cid>) -> Result<()>;
 
         /// Returns the aliases referencing a cid
-        reverse_alias(cid: &Cid) -> Result<Option<Vec<Vec<u8>>>>;
+        reverse_alias(cid: &Cid) -> Result<Option<HashSet<Vec<u8>>>>;
 
         /// Resolves an alias to a cid
         resolve(name: impl AsRef<[u8]>) -> Result<Option<Cid>>;
 
         /// Extend temp pin with an additional cid
-        extend_temp_pin(pin: &TempPin, link: &Cid) -> Result<()>;
+        extend_temp_pin(pin: &mut TempPin, link: &Cid) -> Result<()>;
 
         /// Checks if the store knows about the cid.
         ///
@@ -556,7 +581,7 @@ where
         /// Put a block
         ///
         /// This will only be completed once the transaction is successfully committed.
-        put_block(block: &Block<S>, pin: Option<&TempPin>) -> Result<()>;
+        put_block(block: &Block<S>, pin: Option<&mut TempPin>) -> Result<()>;
 
         /// Get a block
         get_block(cid: &Cid) -> Result<Option<Vec<u8>>>;
@@ -567,13 +592,13 @@ where
         get_store_stats() -> Result<StoreStats>;
     }
 
-    pub fn put_blocks<I>(&mut self, blocks: I, pin: Option<&TempPin>) -> Result<()>
+    pub fn put_blocks<I>(&mut self, blocks: I, mut pin: Option<&mut TempPin>) -> Result<()>
     where
         I: IntoIterator<Item = Block<S>>,
     {
         let mut txn = self.transaction();
         for block in blocks {
-            txn.put_block(&block, pin)?;
+            txn.put_block(&block, pin.as_deref_mut())?;
         }
         txn.commit()
     }

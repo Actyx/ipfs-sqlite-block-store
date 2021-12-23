@@ -12,6 +12,7 @@ use libipld::{
     multihash::{Code, MultihashDigest},
 };
 use libipld::{prelude::*, DagCbor};
+use maplit::hashset;
 use rusqlite::{params, Connection};
 use std::time::Duration;
 use tempdir::TempDir;
@@ -108,40 +109,48 @@ fn pinned(i: usize) -> Block {
 #[test]
 fn insert_get() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
-    let b = block("b");
-    let c = block("c");
-    let a = links("a", vec![&b, &c, &c]);
-    store.put_block(&a, None)?;
-    // we should have all three cids
-    assert!(store.has_cid(a.cid())?);
-    assert!(store.has_cid(b.cid())?);
-    assert!(store.has_cid(c.cid())?);
-    // but only the first block
-    assert!(store.has_block(a.cid())?);
-    assert!(!store.has_block(b.cid())?);
-    assert!(!store.has_block(c.cid())?);
-    // check the data
-    assert_eq!(store.get_block(a.cid())?, Some(a.data().to_vec()));
-    // check descendants
-    assert_eq!(
-        store.get_descendants::<Vec<_>>(a.cid())?,
-        vec![*a.cid(), *b.cid(), *c.cid()]
-    );
-    // check missing blocks - should be b and c
-    assert_eq!(
-        store.get_missing_blocks::<Vec<_>>(a.cid())?,
-        vec![*b.cid(), *c.cid()]
-    );
-    // alias the root
-    store.alias(b"alias1", Some(a.cid()))?;
-    store.gc()?;
-    // after gc, we shold still have the block
-    assert!(store.has_block(a.cid())?);
-    store.alias(b"alias1", None)?;
-    store.gc()?;
-    // after gc, we shold no longer have the block
-    assert!(!store.has_block(a.cid())?);
-    Ok(())
+    let t = |store: &mut BlockStore| {
+        let b = block("b");
+        let c = block("c");
+        let a = links("a", vec![&b, &c, &c]);
+        store.put_block(&a, None)?;
+        // we should have all three cids
+        anyhow::ensure!(store.has_cid(a.cid())?);
+        anyhow::ensure!(store.has_cid(b.cid())?);
+        anyhow::ensure!(store.has_cid(c.cid())?);
+        // but only the first block
+        anyhow::ensure!(store.has_block(a.cid())?);
+        anyhow::ensure!(!store.has_block(b.cid())?);
+        anyhow::ensure!(!store.has_block(c.cid())?);
+        // check the data
+        anyhow::ensure!(store.get_block(a.cid())? == Some(a.data().to_vec()));
+        // check descendants
+        anyhow::ensure!(
+            store.get_descendants::<Vec<_>>(a.cid())? == vec![*a.cid(), *b.cid(), *c.cid()]
+        );
+        // check missing blocks - should be b and c
+        anyhow::ensure!(store.get_missing_blocks::<Vec<_>>(a.cid())? == vec![*b.cid(), *c.cid()]);
+        // alias the root
+        store.alias(b"alias1", Some(a.cid()))?;
+        store.gc()?;
+        // after gc, we shold still have the block
+        anyhow::ensure!(store.has_block(a.cid())?);
+        store.alias(b"alias1", None)?;
+        store.gc()?;
+        // after gc, we shold no longer have the block
+        anyhow::ensure!(!store.has_block(a.cid())?);
+        Ok(())
+    };
+
+    match t(&mut store) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            store
+                .backup(concat!("/tmp/inspect-", line!(), ".sqlite"))
+                .unwrap();
+            Err(e)
+        }
+    }
 }
 
 #[test]
@@ -372,18 +381,18 @@ fn test_reverse_alias() -> anyhow::Result<()> {
     let block = pinned(0);
     assert_eq!(store.reverse_alias(block.cid())?, None);
     store.put_block(&block, None)?;
-    assert_eq!(store.reverse_alias(block.cid())?, Some(vec![]));
+    assert_eq!(store.reverse_alias(block.cid())?, Some(hashset! {}));
     store.alias(&b"leaf"[..], Some(block.cid()))?;
     assert_eq!(
         store.reverse_alias(block.cid())?,
-        Some(vec![b"leaf".to_vec()])
+        Some(hashset! {b"leaf".to_vec()})
     );
     let block2 = links("1", vec![&block]); // needs link to cid
     store.put_block(&block2, None)?;
     store.alias(&b"root"[..], Some(block2.cid()))?;
     assert_eq!(
         store.reverse_alias(block.cid())?,
-        Some(vec![b"leaf".to_vec(), b"root".to_vec()])
+        Some(hashset! {b"leaf".to_vec(), b"root".to_vec()})
     );
     Ok(())
 }
@@ -422,13 +431,13 @@ fn temp_pin() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let a = block("a");
     let b = block("b");
-    let alias = store.temp_pin();
+    let mut alias = store.temp_pin();
 
-    store.put_block(&a, Some(&alias))?;
+    store.put_block(&a, Some(&mut alias))?;
     store.gc()?;
     assert!(store.has_block(a.cid())?);
 
-    store.put_block(&b, Some(&alias))?;
+    store.put_block(&b, Some(&mut alias))?;
     store.gc()?;
     assert!(store.has_block(b.cid())?);
 

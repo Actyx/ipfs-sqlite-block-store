@@ -8,15 +8,8 @@ use fnv::FnvHashSet;
 use libipld::{cid, codec::References, store::StoreParams, Cid, Ipld};
 use parking_lot::Mutex;
 use std::{
-    convert::TryFrom,
-    iter::FromIterator,
-    marker::PhantomData,
-    mem,
-    sync::{
-        atomic::{AtomicI64, Ordering},
-        Arc,
-    },
-    time::Duration,
+    collections::HashSet, convert::TryFrom, iter::FromIterator, marker::PhantomData, mem,
+    sync::Arc, time::Duration,
 };
 
 pub struct Transaction<'a, S> {
@@ -76,7 +69,7 @@ where
     }
 
     /// Returns the aliases referencing a cid.
-    pub fn reverse_alias(&mut self, cid: &Cid) -> Result<Option<Vec<Vec<u8>>>> {
+    pub fn reverse_alias(&mut self, cid: &Cid) -> Result<Option<HashSet<Vec<u8>>>> {
         let cid = CidBytes::try_from(cid)?;
         in_txn(self.inner, None, move |txn| {
             reverse_alias(txn, cid.as_ref())
@@ -95,20 +88,15 @@ where
 
     /// Get a temporary pin for safely adding blocks to the store
     pub fn temp_pin(&mut self) -> TempPin {
-        TempPin {
-            id: AtomicI64::new(0),
-            expired_temp_pins: self.expired_temp_pins.clone(),
-        }
+        TempPin::new(self.expired_temp_pins.clone())
     }
 
     /// Extend temp pin with an additional cid
-    pub fn extend_temp_pin(&mut self, pin: &TempPin, link: &Cid) -> Result<()> {
+    pub fn extend_temp_pin(&mut self, pin: &mut TempPin, link: &Cid) -> Result<()> {
         let link = CidBytes::try_from(link)?;
-        let pin0 = pin.id.load(Ordering::SeqCst);
         in_txn(self.inner, None, move |txn| {
-            extend_temp_pin(txn, pin0, vec![link])
+            extend_temp_pin(txn, pin, vec![link])
         })?;
-        pin.id.store(pin0, Ordering::SeqCst); // FIXME WAT?
         Ok(())
     }
 
@@ -177,9 +165,7 @@ where
     }
 
     /// Put a block. This will only be completed once the transaction is successfully committed
-    pub fn put_block(&mut self, block: &Block<S>, pin: Option<&TempPin>) -> Result<()> {
-        let mut pin0 = pin.map(|pin| pin.id.load(Ordering::SeqCst));
-        let pin1 = &mut pin0;
+    pub fn put_block(&mut self, block: &Block<S>, mut pin: Option<&mut TempPin>) -> Result<()> {
         let cid_bytes = CidBytes::try_from(block.cid())?;
         let mut links = Vec::new();
         block.references(&mut links)?;
@@ -190,15 +176,20 @@ where
         let res = in_txn(
             self.inner,
             Some(("put block", Duration::from_millis(100))),
-            move |txn| put_block(txn, &cid_bytes, block.data(), links.iter().copied(), pin1),
+            move |txn| {
+                put_block(
+                    txn,
+                    &cid_bytes,
+                    block.data(),
+                    links.iter().copied(),
+                    pin.as_deref_mut(),
+                )
+            },
         )?;
         let write_info = WriteInfo::new(
             BlockInfo::new(res.id, block.cid(), block.data().len()),
             res.block_exists,
         );
-        if let (Some(pin), Some(p)) = (pin, pin0) {
-            pin.id.store(p, Ordering::SeqCst);
-        }
         self.info.written.push(write_info);
         Ok(())
     }

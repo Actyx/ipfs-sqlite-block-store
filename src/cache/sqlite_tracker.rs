@@ -1,5 +1,5 @@
 use super::{BlockInfo, CacheTracker};
-use crate::BlockStoreError;
+use crate::error::Context;
 use fnv::{FnvHashMap, FnvHashSet};
 use parking_lot::Mutex;
 use rusqlite::{Connection, Transaction};
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS accessed (
 "#;
 
 fn init_db(conn: &mut Connection) -> crate::Result<()> {
-    conn.execute_batch(INIT)?;
+    conn.execute_batch(INIT).ctx("initialising CT DB")?;
     Ok(())
 }
 
@@ -44,7 +44,7 @@ pub(crate) fn in_ro_txn<T>(
     conn: &mut Connection,
     f: impl FnOnce(&Transaction) -> crate::Result<T>,
 ) -> crate::Result<T> {
-    let txn = conn.transaction()?;
+    let txn = conn.transaction().ctx("beginning CT ro transaction")?;
     f(&txn)
 }
 
@@ -54,12 +54,12 @@ fn attempt_txn<T>(
 ) {
     let result = conn
         .transaction()
-        .map_err(BlockStoreError::from)
+        .ctx("beginning CT transaction")
         .and_then(|txn| {
             f(&txn)?;
             Ok(txn)
         })
-        .and_then(|txn| txn.commit().map_err(Into::into));
+        .and_then(|txn| txn.commit().ctx("committing CT transaction"));
     if let Err(cause) = result {
         tracing::warn!("Unable to execute transaction: {}", cause);
     }
@@ -76,8 +76,10 @@ fn attempt_ro_txn<T>(
 }
 
 fn set_accessed(txn: &Transaction, id: i64, accessed: i64) -> crate::Result<()> {
-    txn.prepare_cached("REPLACE INTO accessed (id, time) VALUES (?, ?)")?
-        .execute([id, accessed])?;
+    txn.prepare_cached("REPLACE INTO accessed (id, time) VALUES (?, ?)")
+        .ctx("setting accessed (prep)")?
+        .execute([id, accessed])
+        .ctx("setting accessed")?;
     Ok(())
 }
 
@@ -85,12 +87,16 @@ fn get_accessed_bulk(
     txn: &Transaction,
     result: &mut FnvHashMap<i64, Option<i64>>,
 ) -> crate::Result<()> {
-    let mut stmt = txn.prepare_cached("SELECT id, time FROM accessed")?;
-    let accessed = stmt.query_map([], |row| {
-        let id: i64 = row.get(0)?;
-        let time: i64 = row.get(1)?;
-        Ok((id, time))
-    })?;
+    let mut stmt = txn
+        .prepare_cached("SELECT id, time FROM accessed")
+        .ctx("getting accessed (prep)")?;
+    let accessed = stmt
+        .query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let time: i64 = row.get(1)?;
+            Ok((id, time))
+        })
+        .ctx("getting accessed")?;
     // we have no choice but to run through all values in accessed.
     for row in accessed.flatten() {
         // only add if a row already exists
@@ -103,16 +109,21 @@ fn get_accessed_bulk(
 }
 
 fn delete_id(txn: &Transaction, id: i64) -> crate::Result<()> {
-    txn.prepare_cached("DELETE FROM accessed WHERE id = ?")?
-        .execute([id])?;
+    txn.prepare_cached("DELETE FROM accessed WHERE id = ?")
+        .ctx("deleting from CT (prep)")?
+        .execute([id])
+        .ctx("deleting from CT")?;
     Ok(())
 }
 
 fn get_ids(txn: &Transaction) -> crate::Result<Vec<i64>> {
     let ids = txn
-        .prepare_cached("SELECT id FROM accessed")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
+        .prepare_cached("SELECT id FROM accessed")
+        .ctx("getting IDs (prep)")?
+        .query_map([], |row| row.get(0))
+        .ctx("getting IDs")?
+        .collect::<rusqlite::Result<Vec<i64>>>()
+        .ctx("getting IDs (transform)")?;
     Ok(ids)
 }
 
@@ -121,7 +132,7 @@ where
     F: Fn(i64, BlockInfo) -> Option<i64>,
 {
     pub fn memory(mk_cache_entry: F) -> crate::Result<Self> {
-        let mut conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory().ctx("opening in-memory CT DB")?;
         init_db(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -130,7 +141,7 @@ where
     }
 
     pub fn open(path: impl AsRef<Path>, mk_cache_entry: F) -> crate::Result<Self> {
-        let mut conn = Connection::open(path)?;
+        let mut conn = Connection::open(path).ctx("opening CT DB")?;
         init_db(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
