@@ -188,8 +188,8 @@ impl Config {
         self
     }
     /// Set size targets for the store
-    pub fn with_size_targets(mut self, size_targets: SizeTargets) -> Self {
-        self.size_targets = size_targets;
+    pub fn with_size_targets(mut self, count: u64, size: u64) -> Self {
+        self.size_targets = SizeTargets { count, size };
         self
     }
     /// Set strategy for which non-pinned blocks to keep in case one of the size targets is exceeded.

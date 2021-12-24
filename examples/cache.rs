@@ -1,6 +1,6 @@
 use ipfs_sqlite_block_store::{
     cache::{AsyncCacheTracker, Spawner, SqliteCacheTracker},
-    BlockStore, Config, SizeTargets,
+    BlockStore, Config,
 };
 use itertools::*;
 use libipld::{cbor::DagCborCodec, codec::Codec, Cid, DagCbor};
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let mut store = BlockStore::<libipld::DefaultParams>::open(
         "cache-test.sqlite",
         Config::default()
-            .with_size_targets(SizeTargets::new(1000, 1000000))
+            .with_size_targets(1000, 1000000)
             .with_cache_tracker(tracker),
     )?;
     let n = 100000;

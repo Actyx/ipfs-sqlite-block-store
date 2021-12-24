@@ -289,12 +289,17 @@ pub(crate) fn incremental_gc(
     size_targets: SizeTargets,
     cache_tracker: &impl CacheTracker,
 ) -> crate::Result<bool> {
-    let _span = tracing::info_span!("incremental GC").entered();
+    let _span = tracing::info_span!("GC", %min_blocks, ?max_duration).entered();
 
     // get the store stats from the stats table:
     // if we don't exceed any of the size targets, there is nothing to do
     let mut stats = in_txn(conn, None, get_store_stats)?;
     if !size_targets.exceeded(&stats) {
+        tracing::info!(
+            blocks = display(stats.count),
+            size = display(stats.size),
+            "nothing to do"
+        );
         return Ok(true);
     }
 
@@ -336,9 +341,11 @@ pub(crate) fn incremental_gc(
     let mut n = 0;
     for id in ids.iter() {
         if n >= min_blocks && t0.elapsed() > max_duration {
+            tracing::info!(removed = n, "stopping due to time constraint");
             return Ok(false);
         }
         if !size_targets.exceeded(&stats) {
+            tracing::info!(removed = n, "finished, target reached");
             return Ok(true);
         }
         in_txn(conn, None, |txn| {

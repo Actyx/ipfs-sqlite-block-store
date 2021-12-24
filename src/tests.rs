@@ -217,7 +217,7 @@ fn size_targets() -> anyhow::Result<()> {
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
     let mut store = BlockStore::memory(
         Config::default()
-            .with_size_targets(SizeTargets::new(10, 10000))
+            .with_size_targets(10, 10000)
             .with_cache_tracker(SortByIdCacheTracker),
     )?;
 
@@ -280,7 +280,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
     // create a store with a non-empty size target to enable keeping non-pinned stuff around
     let mut store = BlockStore::memory(
         Config::default()
-            .with_size_targets(SizeTargets::new(10, 10000))
+            .with_size_targets(10, 10000)
             .with_cache_tracker(tracker),
     )?;
 

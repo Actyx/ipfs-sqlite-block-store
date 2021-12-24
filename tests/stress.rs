@@ -19,7 +19,7 @@ type BlockStore = ipfs_sqlite_block_store::BlockStore<libipld::DefaultParams>;
 #[test]
 fn main() -> anyhow::Result<()> {
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_span_events(FmtSpan::ACTIVE | FmtSpan::CLOSE)
+        .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .finish();
@@ -28,10 +28,17 @@ fn main() -> anyhow::Result<()> {
     const STREAMS: usize = 5;
     const ROUNDS: usize = 200;
 
+    const TARGET_SIZE: u64 = 10_000;
+    const TARGET_COUNT: u64 = 1_000;
+
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("db");
 
-    let mut store = BlockStore::open_path(DbPath::File(db_path), Config::default()).unwrap();
+    let mut store = BlockStore::open_path(
+        DbPath::File(db_path),
+        Config::default().with_size_targets(TARGET_COUNT, TARGET_SIZE),
+    )
+    .unwrap();
 
     let stopped = Arc::new(AtomicBool::new(false));
     let handle = std::thread::spawn({
@@ -102,15 +109,15 @@ fn main() -> anyhow::Result<()> {
 
     let stats = store.get_store_stats().unwrap();
     println!("stats {:?}", stats);
-    assert!(stats.count() < 100);
-    assert!(stats.size() < 20_000);
+    assert!(stats.count() < 2 * TARGET_COUNT);
+    assert!(stats.size() < 2 * TARGET_SIZE);
 
     store.gc().unwrap();
 
     let stats = store.get_store_stats().unwrap();
     println!("stats {:?}", stats);
-    assert_eq!(stats.count() as usize, STREAMS * 6);
-    assert_eq!(stats.size() as usize, STREAMS * 348);
+    assert!(stats.count() < TARGET_COUNT);
+    assert!(stats.size() < TARGET_SIZE);
 
     Ok(())
 }
