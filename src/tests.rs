@@ -3,7 +3,7 @@ use crate::{
     cache::CacheTracker,
     cache::InMemCacheTracker,
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
-    Config, DbPath, SizeTargets,
+    BlockStoreError, Config, DbPath, Result, StoreStats, TempPin,
 };
 use fnv::FnvHashSet;
 use libipld::{
@@ -14,11 +14,80 @@ use libipld::{
 use libipld::{prelude::*, DagCbor};
 use maplit::hashset;
 use rusqlite::{params, Connection};
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    iter::FromIterator,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tempdir::TempDir;
 
 type Block = libipld::Block<libipld::DefaultParams>;
-type BlockStore = crate::BlockStore<libipld::DefaultParams>;
+
+macro_rules! delegate {
+    ($($n:ident$(<$v:ident : $vt:path>)?($($arg:ident : $typ:ty),*) -> $ret:ty;)+) => {
+        $(
+            pub fn $n$(<$v: $vt>)?(&mut self, $($arg: $typ),*) -> $ret {
+                let ret = self.0.$n($($arg),*);
+                if ret.is_err() {
+                    match self.backup() {
+                        Ok(p) => eprintln!("wrote backup to {}", p.display()),
+                        Err(e) => eprintln!("couldn’t write backup: {:#}", e),
+                    }
+                }
+                ret
+            }
+        )+
+    };
+}
+struct BlockStore(crate::BlockStore<libipld::DefaultParams>);
+
+#[allow(unused)]
+impl BlockStore {
+    pub fn memory(config: Config) -> Result<Self> {
+        Ok(Self(crate::BlockStore::memory(config)?))
+    }
+    pub fn open(path: impl AsRef<Path>, config: Config) -> Result<Self> {
+        Ok(Self(crate::BlockStore::open(path, config)?))
+    }
+    pub fn open_path(path: DbPath, config: Config) -> Result<Self> {
+        Ok(Self(crate::BlockStore::open_path(path, config)?))
+    }
+
+    fn backup(&mut self) -> Result<PathBuf> {
+        let file = tempfile::tempdir()
+            .map_err(|e| BlockStoreError::Other(e.into()))?
+            .into_path()
+            .join("db");
+        self.0.backup(file.as_path())?;
+        Ok(file)
+    }
+
+    pub fn temp_pin(&self) -> TempPin {
+        self.0.temp_pin()
+    }
+
+    delegate! {
+        alias(name: impl AsRef<[u8]>, link: Option<&Cid>) -> Result<()>;
+        reverse_alias(cid: &Cid) -> Result<Option<HashSet<Vec<u8>>>>;
+        resolve(name: impl AsRef<[u8]>) -> Result<Option<Cid>>;
+        extend_temp_pin(pin: &mut TempPin, link: &Cid) -> Result<()>;
+        has_cid(cid: &Cid) -> Result<bool>;
+        has_block(cid: &Cid) -> Result<bool>;
+        get_known_cids<C: FromIterator<Cid>>() -> Result<C>;
+        get_block_cids<C: FromIterator<Cid>>() -> Result<C>;
+        get_descendants<C: FromIterator<Cid>>(cid: &Cid) -> Result<C>;
+        get_missing_blocks<C: FromIterator<Cid>>(cid: &Cid) -> Result<C>;
+        aliases<C: FromIterator<(Vec<u8>, Cid)>>() -> Result<C>;
+        put_block(block: &Block, pin: Option<&mut TempPin>) -> Result<()>;
+        get_block(cid: &Cid) -> Result<Option<Vec<u8>>>;
+        get_store_stats() -> Result<StoreStats>;
+        gc() -> Result<()>;
+        incremental_gc(blocks: usize, duration: Duration) -> Result<bool>;
+        vacuum() -> Result<()>;
+        integrity_check() -> Result<()>;
+    }
+}
 
 #[derive(Debug, DagCbor)]
 struct Node {
@@ -107,50 +176,41 @@ fn pinned(i: usize) -> Block {
 }
 
 #[test]
-fn insert_get() -> anyhow::Result<()> {
-    let mut store = BlockStore::memory(Config::default())?;
-    let t = |store: &mut BlockStore| {
-        let b = block("b");
-        let c = block("c");
-        let a = links("a", vec![&b, &c, &c]);
-        store.put_block(&a, None)?;
-        // we should have all three cids
-        anyhow::ensure!(store.has_cid(a.cid())?);
-        anyhow::ensure!(store.has_cid(b.cid())?);
-        anyhow::ensure!(store.has_cid(c.cid())?);
-        // but only the first block
-        anyhow::ensure!(store.has_block(a.cid())?);
-        anyhow::ensure!(!store.has_block(b.cid())?);
-        anyhow::ensure!(!store.has_block(c.cid())?);
-        // check the data
-        anyhow::ensure!(store.get_block(a.cid())? == Some(a.data().to_vec()));
-        // check descendants
-        anyhow::ensure!(
-            store.get_descendants::<Vec<_>>(a.cid())? == vec![*a.cid(), *b.cid(), *c.cid()]
-        );
-        // check missing blocks - should be b and c
-        anyhow::ensure!(store.get_missing_blocks::<Vec<_>>(a.cid())? == vec![*b.cid(), *c.cid()]);
-        // alias the root
-        store.alias(b"alias1", Some(a.cid()))?;
-        store.gc()?;
-        // after gc, we shold still have the block
-        anyhow::ensure!(store.has_block(a.cid())?);
-        store.alias(b"alias1", None)?;
-        store.gc()?;
-        // after gc, we shold no longer have the block
-        anyhow::ensure!(!store.has_block(a.cid())?);
-        Ok(())
-    };
-
-    match t(&mut store) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            store
-                .backup(concat!("/tmp/inspect-", line!(), ".sqlite"))
-                .unwrap();
-            Err(e)
-        }
-    }
+fn insert_get() {
+    let mut store = BlockStore::memory(Config::default()).unwrap();
+    let b = block("b");
+    let c = block("c");
+    let a = links("a", vec![&b, &c, &c]);
+    store.put_block(&a, None).unwrap();
+    // we should have all three cids
+    assert!(store.has_cid(a.cid()).unwrap());
+    assert!(store.has_cid(b.cid()).unwrap());
+    assert!(store.has_cid(c.cid()).unwrap());
+    // but only the first block
+    assert!(store.has_block(a.cid()).unwrap());
+    assert!(!store.has_block(b.cid()).unwrap());
+    assert!(!store.has_block(c.cid()).unwrap());
+    // check the data
+    assert_eq!(store.get_block(a.cid()).unwrap(), Some(a.data().to_vec()));
+    // check descendants
+    assert_eq!(
+        store.get_descendants::<Vec<Cid>>(a.cid()).unwrap(),
+        vec![*a.cid(), *b.cid(), *c.cid()]
+    );
+    // check missing blocks - should be b and c
+    assert_eq!(
+        store.get_missing_blocks::<Vec<_>>(a.cid()).unwrap(),
+        vec![*b.cid(), *c.cid()]
+    );
+    // alias the root
+    store.alias(b"alias1", Some(a.cid())).unwrap();
+    store.gc().unwrap();
+    // after gc, we shold still have the block
+    assert!(store.has_block(a.cid()).unwrap());
+    store.alias(b"alias1", None).unwrap();
+    store.gc().unwrap();
+    // after gc, we shold no longer have the block
+    assert!(!store.has_block(a.cid()).unwrap());
 }
 
 #[test]
@@ -459,7 +519,11 @@ fn broken_db() -> anyhow::Result<()> {
 
     let path = tmp.path().join("broken.sqlite");
     std::fs::copy("test-data/broken.sqlite", &path)?;
-    let mut store = BlockStore::open_path(DbPath::File(path), Config::default())?;
+    // don’t use the wrapper — we expect it to fail and don’t need a backup
+    let mut store = crate::BlockStore::<libipld::DefaultParams>::open_path(
+        DbPath::File(path),
+        Config::default(),
+    )?;
     assert!(store.integrity_check().is_err());
     Ok(())
 }
