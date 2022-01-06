@@ -390,6 +390,29 @@ pub(crate) fn incremental_gc(
             Ok(())
         })?;
     }
+
+    if n > 0 {
+        // the above only removed the blocks, now we need to clean up those cids that we don’t
+        // need anymore
+        in_txn(
+            conn,
+            Some(("cleaning up CIDs", Duration::from_secs(1))),
+            |txn| {
+                let mut del_cid = c!("deleting CIDs (prep)" => txn.prepare_cached(
+                    // refs.parent_id is not a blocker because if we delete this it means that
+                    // the block is gone; temp_pins don’t need to be checked because their
+                    // existence proves the presence of the block, which prevents removal
+                    "DELETE FROM cids WHERE \
+                        id NOT IN (SELECT block_id FROM blocks) AND \
+                        id NOT IN (SELECT block_id FROM aliases) AND \
+                        id NOT IN (SELECT child_id FROM refs)"
+                ));
+                c!("deleting CIDs" => del_cid.execute([]));
+                Ok(())
+            },
+        )?;
+    }
+
     Ok(true)
 }
 

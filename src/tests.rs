@@ -268,6 +268,7 @@ fn incremental_insert() -> anyhow::Result<()> {
     store.alias(b"alias1", Some(c.cid()))?;
     store.gc()?;
     assert!(!store.has_block(a.cid())?);
+    assert!(!store.has_cid(a.cid())?);
     assert!(store.has_block(c.cid())?);
     Ok(())
 }
