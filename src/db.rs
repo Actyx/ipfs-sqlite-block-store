@@ -339,14 +339,16 @@ pub(crate) fn incremental_gc(
     cache_tracker.sort_ids(&mut ids);
 
     let mut n = 0;
+    let mut ret_val = true;
     for id in ids.iter() {
         if n >= min_blocks && t0.elapsed() > max_duration {
             tracing::info!(removed = n, "stopping due to time constraint");
-            return Ok(false);
+            ret_val = false;
+            break;
         }
         if !size_targets.exceeded(&stats) {
             tracing::info!(removed = n, "finished, target reached");
-            return Ok(true);
+            break;
         }
         in_txn(conn, None, |txn| {
             // get block size and check whether now referenced
@@ -413,7 +415,7 @@ pub(crate) fn incremental_gc(
         )?;
     }
 
-    Ok(true)
+    Ok(ret_val)
 }
 
 pub(crate) fn delete_temp_pin(txn: &Transaction, pin: i64) -> crate::Result<()> {
