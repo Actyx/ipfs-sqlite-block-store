@@ -357,7 +357,7 @@ pub(crate) fn incremental_gc(
                 WITH RECURSIVE
                     ancestor(id) AS (
                         SELECT ?
-                        UNION ALL
+                        UNION -- must not use UNION ALL in case of pathologically linked dags
                         SELECT parent_id FROM refs, ancestor ON id = child_id
                     ),
                     names AS (SELECT name FROM ancestor, aliases ON id = block_id)
@@ -375,6 +375,7 @@ pub(crate) fn incremental_gc(
                 .query_row([id, id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .optional()
                 .ctx("getting GC block")?;
+            tracing::trace!(block_size = ?&block_size);
             if let Some((block_size, cid, names)) = block_size {
                 if names != 0 {
                     // block is referenced again
@@ -383,10 +384,12 @@ pub(crate) fn incremental_gc(
                 let cid = Cid::try_from(&cid)?;
                 let len = c!("getting GC block size" => usize::try_from(block_size));
                 c!("updating GC stats" => update_stats_stmt.execute([block_size]));
+                tracing::trace!("stats updated");
                 stats.count -= 1;
                 stats.size -= block_size as u64;
                 cache_tracker.blocks_deleted(vec![BlockInfo::new(*id, &cid, len)]);
             }
+            tracing::trace!("deleting for real");
             c!("deleting GC block" => delete_stmt.execute(&[id]));
             n += 1;
             Ok(())
@@ -565,14 +568,11 @@ pub(crate) fn get_descendants<C: ToSql + FromSql>(
                 descendant_of(id) AS
                 (
                     SELECT id FROM cids WHERE cid = ?
-                    UNION ALL
+                    UNION
                     SELECT child_id FROM refs, descendant_of ON id = parent_id
-                ),
-                descendant_ids as (
-                    SELECT DISTINCT id FROM descendant_of
                 )
                 -- retrieve corresponding cids - this is a set because of select distinct
-                SELECT cid from cids, descendant_ids USING (id);
+                SELECT cid from cids, descendant_of USING (id);
             "#,
         )
         .ctx("getting descendants (prep)")?
@@ -598,7 +598,7 @@ pub(crate) fn get_missing_blocks<C: ToSql + FromSql>(
                     -- find descendants of cid, including the id of the cid itself
                     desc(id) AS (
                         SELECT ?
-                        UNION ALL
+                        UNION
                         SELECT child_id FROM refs, desc ON id = parent_id
                     ),
                     -- find orphaned ids
@@ -606,7 +606,7 @@ pub(crate) fn get_missing_blocks<C: ToSql + FromSql>(
                       SELECT id FROM desc LEFT JOIN blocks ON id = block_id WHERE block_id IS NULL
                     )
                     -- retrieve corresponding cids - this is a set because of select distinct
-                SELECT cid from cids JOIN orphaned_ids ON cids.id = orphaned_ids.id
+                SELECT cid FROM cids, orphaned_ids USING (id)
                 "#,
         )
         .ctx("finding missing_blocks (prep)")?
@@ -657,7 +657,7 @@ pub(crate) fn reverse_alias(
                     ancestor_of(id) AS
                     (
                         SELECT ?
-                        UNION ALL
+                        UNION
                         SELECT parent_id FROM refs, ancestor_of ON id = child_id
                     )
                 SELECT name FROM ancestor_of, aliases ON id = block_id;
