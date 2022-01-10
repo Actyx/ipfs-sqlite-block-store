@@ -103,10 +103,6 @@ CREATE TABLE IF NOT EXISTS temp_pins (
       FOREIGN KEY (block_id)
       REFERENCES cids(id)
       ON DELETE CASCADE
-    CONSTRAINT fk_block
-      FOREIGN KEY (block_id)
-      REFERENCES blocks(block_id)
-      ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_temp_pins_block_id
