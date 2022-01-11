@@ -285,7 +285,7 @@ pub(crate) fn incremental_gc(
     size_targets: SizeTargets,
     cache_tracker: &impl CacheTracker,
 ) -> crate::Result<bool> {
-    let _span = tracing::info_span!("GC", %min_blocks, ?max_duration).entered();
+    let _span = tracing::debug_span!("GC", %min_blocks, ?max_duration).entered();
 
     // get the store stats from the stats table:
     // if we don't exceed any of the size targets, there is nothing to do
