@@ -1,6 +1,6 @@
 # Changelog
 
-This changelog was started after the 0.9 release.
+This changelog was started sometime after the 0.7 release.
 
 ## Release 0.10
 
@@ -25,3 +25,7 @@ This changelog was started after the 0.9 release.
 - make initial recomputation of storage size stats concurrent, since it needs to read all the blocks
 - always provide context in error return values
 - make GC fully concurrent, with locks taken only for brief periods — it is now reasonable to always run a full GC
+
+## Release 0.8
+
+- no changes from 0.7 except for updating to `rusqlite` version 0.26 (which was reverted in 0.9; the proper update was only done in 0.10)
