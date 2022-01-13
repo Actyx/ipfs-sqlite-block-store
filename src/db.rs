@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS refs (
     parent_id INTEGER NOT NULL,
     child_id INTEGER NOT NULL,
     PRIMARY KEY(parent_id,child_id)
-    CONSTRAINT fk_parent_id
+    CONSTRAINT fk_parent_block
       FOREIGN KEY (parent_id)
-      REFERENCES cids(id)
+      REFERENCES blocks(block_id)
       ON DELETE CASCADE
     CONSTRAINT fk_child_id
       FOREIGN KEY (child_id)

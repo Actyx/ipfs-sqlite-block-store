@@ -18,6 +18,8 @@ This changelog was started sometime after the 0.7 release.
 
 0.10.6: fix CID cleanup to never remove temp_pins
 
+0.10.7: fix GC to actually remove blocks from the refs table
+
 ## Release 0.9
 
 - use `unblock_notify` feature of `rusqlite` to allow concurrent transactions to the same DB
