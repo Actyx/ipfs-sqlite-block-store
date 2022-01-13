@@ -16,6 +16,8 @@ This changelog was started after the 0.9 release.
 
 0.10.5: make GC logging less obnoxious
 
+0.10.6: fix CID cleanup to never remove temp_pins
+
 ## Release 0.9
 
 - use `unblock_notify` feature of `rusqlite` to allow concurrent transactions to the same DB
