@@ -2,6 +2,12 @@
 
 This changelog was started sometime after the 0.7 release.
 
+## Release 0.11
+
+- automatically upgrade DB schema to new foreign key definitions
+
+  **This makes downgrades to 0.10 impossible.**
+
 ## Release 0.10
 
 - update to `rusqlite` version 0.26
