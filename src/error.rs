@@ -47,7 +47,7 @@ impl std::error::Error for BlockStoreError {
             BlockStoreError::SqliteError(_e, _) => None,
             BlockStoreError::CidError(e) => Some(e),
             BlockStoreError::TryFromIntError(e, _) => Some(e),
-            BlockStoreError::Other(e) => Some(e.as_ref()),
+            BlockStoreError::Other(e) => AsRef::<dyn Error>::as_ref(e).source(),
             BlockStoreError::NoAdditionalInMemory => None,
         }
     }
@@ -129,5 +129,20 @@ Caused by:
                 sql string caused by Some(\"Error code 517: \
                 Cannot promote read transaction to write transaction because of writes by another connection\")");
         }
+    }
+
+    #[test]
+    fn double() {
+        let e = BlockStoreError::Other(anyhow::anyhow!("hello"));
+        assert_eq!(format!("{}", e), "hello");
+        assert_eq!(format!("{:#}", e), "hello");
+
+        let e = Result::<(), _>::Err(e).context("world").unwrap_err();
+        assert_eq!(format!("{:#}", e), "world: hello");
+
+        assert_eq!(e.to_string(), "world");
+        let e = e.source().unwrap();
+        assert_eq!(e.to_string(), "hello");
+        assert!(e.source().is_none());
     }
 }

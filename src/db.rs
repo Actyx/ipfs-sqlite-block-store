@@ -724,7 +724,13 @@ fn ws(s: impl AsRef<str>) -> String {
         }
         r.push_str(t);
     }
-    r
+    r.to_lowercase()
+        .replace("primary_key", "primary key")
+        // adding AUTOINCREMENT doesn’t really work, but it doesn’t hurt here either
+        // (only CREATE TABLE switched on AUTOINCREMENT special behaviour, but our CIDs
+        // don’t need monotonically incrementing IDs, unique is enough)
+        .replace("primary key autoincrement", "primary key")
+        .replace("unique", "primary key")
 }
 
 fn ensure_table(txn: &Transaction, name: &str, sql: &str) -> crate::Result<bool> {
@@ -742,7 +748,7 @@ fn ensure_table(txn: &Transaction, name: &str, sql: &str) -> crate::Result<bool>
             tracing::debug!("table {} is up-to-date", name);
             return Ok(false);
         }
-        if let Some(prefix) = ex_ws.find("CONSTRAINT") {
+        if let Some(prefix) = ex_ws.find("constraint") {
             // definitions must be equal up to the first constraint
             if ex_ws[..prefix] != sql_ws[..prefix] {
                 return Err(BlockStoreError::Other(anyhow::anyhow!(
@@ -756,7 +762,7 @@ fn ensure_table(txn: &Transaction, name: &str, sql: &str) -> crate::Result<bool>
             if sql_ws[..ex_trim.len()] != *ex_trim
                 || !sql_ws[ex_trim.len()..]
                     .trim_start_matches(|c| ", ".contains(c))
-                    .starts_with("CONSTRAINT")
+                    .starts_with("constraint")
             {
                 return Err(BlockStoreError::Other(anyhow::anyhow!(
                     "cannot update table `{}` due to incompatible data content",
@@ -949,7 +955,7 @@ pub(crate) fn in_txn<T>(
                 }
             }
             Err(cause) => {
-                tracing::error!("transaction rolled back! {}", cause);
+                tracing::error!("transaction rolled back! {:#}", cause);
                 break Err(cause);
             }
         }
