@@ -49,70 +49,84 @@ PRAGMA wal_checkpoint(TRUNCATE);
 PRAGMA page_size = 4096;
 "#;
 
+const TABLES: &[(&str, &str)] = &[
+    (
+        "cids",
+        "CREATE TABLE cids ( \
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            cid BLOB UNIQUE NOT NULL \
+        )",
+    ),
+    (
+        "refs",
+        "CREATE TABLE refs ( \
+            parent_id INTEGER NOT NULL, \
+            child_id INTEGER NOT NULL, \
+            PRIMARY KEY(parent_id,child_id) \
+            CONSTRAINT fk_parent_block \
+              FOREIGN KEY (parent_id) \
+              REFERENCES blocks(block_id) \
+              ON DELETE CASCADE \
+            CONSTRAINT fk_child_id \
+              FOREIGN KEY (child_id) \
+              REFERENCES cids(id) \
+              ON DELETE RESTRICT \
+        )",
+    ),
+    (
+        "blocks",
+        "CREATE TABLE blocks ( \
+            block_id INTEGER PRIMARY KEY, \
+            block BLOB NOT NULL, \
+            CONSTRAINT fk_block_cid \
+              FOREIGN KEY (block_id) \
+              REFERENCES cids(id) \
+              ON DELETE CASCADE \
+        )",
+    ),
+    (
+        "aliases",
+        "CREATE TABLE aliases ( \
+            name blob NOT NULL PRIMARY KEY, \
+            block_id INTEGER NOT NULL, \
+            CONSTRAINT fk_block_id \
+              FOREIGN KEY (block_id) \
+              REFERENCES cids(id) \
+              ON DELETE CASCADE \
+        )",
+    ),
+    (
+        "temp_pins",
+        "CREATE TABLE temp_pins ( \
+            id INTEGER NOT NULL, \
+            block_id INTEGER NOT NULL, \
+            PRIMARY KEY(id,block_id) \
+            CONSTRAINT fk_block_id \
+              FOREIGN KEY (block_id) \
+              REFERENCES cids(id) \
+              ON DELETE RESTRICT \
+        )",
+    ),
+    (
+        "stats",
+        "CREATE TABLE stats ( \
+            count INTEGER NOT NULL, \
+            size INTEGER NOT NULL \
+        )",
+    ),
+];
+
 const INIT: &str = r#"
 PRAGMA user_version = 1;
-
-CREATE TABLE IF NOT EXISTS cids (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cid BLOB UNIQUE NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS refs (
-    parent_id INTEGER NOT NULL,
-    child_id INTEGER NOT NULL,
-    PRIMARY KEY(parent_id,child_id)
-    CONSTRAINT fk_parent_block
-      FOREIGN KEY (parent_id)
-      REFERENCES blocks(block_id)
-      ON DELETE CASCADE
-    CONSTRAINT fk_child_id
-      FOREIGN KEY (child_id)
-      REFERENCES cids(id)
-      ON DELETE RESTRICT
-);
 
 CREATE INDEX IF NOT EXISTS idx_refs_child_id
 ON refs (child_id);
 
-CREATE TABLE IF NOT EXISTS blocks (
-    block_id INTEGER PRIMARY KEY,
-    block BLOB NOT NULL,
-    CONSTRAINT fk_block_cid
-      FOREIGN KEY (block_id)
-      REFERENCES cids(id)
-      ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS aliases (
-    name blob NOT NULL PRIMARY KEY,
-    block_id INTEGER NOT NULL,
-    CONSTRAINT fk_block_id
-      FOREIGN KEY (block_id)
-      REFERENCES cids(id)
-      ON DELETE CASCADE
-);
-
 CREATE INDEX IF NOT EXISTS idx_aliases_block_id
 ON aliases (block_id);
 
-CREATE TABLE IF NOT EXISTS temp_pins (
-    id INTEGER NOT NULL,
-    block_id INTEGER NOT NULL,
-    PRIMARY KEY(id,block_id)
-    CONSTRAINT fk_block_id
-      FOREIGN KEY (block_id)
-      REFERENCES cids(id)
-      ON DELETE RESTRICT
-);
-
 CREATE INDEX IF NOT EXISTS idx_temp_pins_block_id
 ON temp_pins (block_id);
-
--- stats table to keep track of total number and size of blocks
-CREATE TABLE IF NOT EXISTS stats (
-    count INTEGER NOT NULL,
-    size INTEGER NOT NULL
-);
 "#;
 
 const CLEANUP_TEMP_PINS: &str = r#"
@@ -135,60 +149,9 @@ fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
 }
 
 macro_rules! c {
-    (DEBUG $t:literal => $e:expr) => {{
-        tracing::debug!($t);
-        $e.ctx(concat!($t, " (line ", line!(), ")"))?
-    }};
     ($t:literal => $e:expr) => {
         $e.ctx(concat!($t, " (line ", line!(), ")"))?
     };
-}
-
-fn migrate_v0_v1(txn: &Transaction) -> crate::Result<()> {
-    tracing::info!("executing migration from v0 to v1");
-    c!("renaming blocks to v0" => txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0"));
-    // drop the old refs table, since the content can be extracted from blocks_v0
-    c!("dropping refs table" => txn.execute_batch("DROP TABLE IF EXISTS refs"));
-    c!("running init" => txn.execute_batch(INIT));
-    c!("dropping temp_pins" => txn.execute_batch(CLEANUP_TEMP_PINS));
-    if let Err(BlockStoreError::SqliteError(QueryReturnedNoRows, _)) = get_store_stats(txn) {
-        c!("faking store stats" => txn.execute_batch("INSERT INTO stats VALUES (0, 0);"));
-    }
-    let num_blocks: i64 = c!("getting block count" => txn.query_row("SELECT COUNT(*) FROM blocks_v0", [], |r| r.get(0)));
-    let mut stmt = c!("getting old blocks (prep)" => txn.prepare("SELECT * FROM blocks_v0"));
-    let block_iter = c!("getting old blocks" =>
-        stmt.query_map([], |row| { Ok((row.get::<_, Vec<u8>>(2)?, row.get::<_, Vec<u8>>(3)?)) }));
-    for (i, block) in block_iter.enumerate() {
-        if num_blocks != 0 && i % 1000 == 0 {
-            tracing::info!(
-                "converting to new blocks, block {} of {} ({}%)",
-                i,
-                num_blocks,
-                100 * i / (num_blocks as usize)
-            );
-        }
-        let (cid, data) = c!("reading blobs" => block);
-        let cid = Cid::try_from(cid).context("parsing CID")?;
-        let block = libipld::Block::<DefaultParams>::new(cid, data).context("creating block")?;
-        let mut set = BTreeSet::new();
-        block
-            .references(&mut set)
-            .context("extracting references")?;
-        put_block(
-            txn,
-            &block.cid().to_bytes(),
-            block.data(),
-            set.into_iter()
-                .map(|cid| cid.to_bytes())
-                .collect::<Vec<_>>(),
-            None,
-        )?;
-    }
-    tracing::info!("dropping table blocks_v0");
-    c!("dropping old blocks" => txn.execute_batch("DROP TABLE blocks_v0"));
-    drop(stmt);
-    tracing::info!("migration from v0 to v1 done!");
-    Ok(())
 }
 
 fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
@@ -332,7 +295,9 @@ pub(crate) fn incremental_gc(
     )?;
 
     // give the cache tracker the opportunity to sort the non-pinned ids by value
+    let span = tracing::debug_span!("sorting CIDs").entered();
     cache_tracker.sort_ids(&mut ids);
+    drop(span);
 
     let mut n = 0;
     let mut ret_val = true;
@@ -346,7 +311,7 @@ pub(crate) fn incremental_gc(
             tracing::info!(removed = n, "finished, target reached");
             break;
         }
-        in_txn(conn, None, |txn| {
+        let res = in_txn(conn, None, |txn| {
             // get block size and check whether now referenced
             let mut block_size_stmt = c!("getting GC block (prep)" => txn.prepare_cached(
                 r#"
@@ -375,21 +340,24 @@ pub(crate) fn incremental_gc(
             if let Some((block_size, cid, names)) = block_size {
                 if names != 0 {
                     // block is referenced again
-                    return Ok(());
+                    return Ok(None);
                 }
                 let cid = Cid::try_from(&cid)?;
                 let len = c!("getting GC block size" => usize::try_from(block_size));
                 c!("updating GC stats" => update_stats_stmt.execute([block_size]));
                 tracing::trace!("stats updated");
-                stats.count -= 1;
-                stats.size -= block_size as u64;
-                cache_tracker.blocks_deleted(vec![BlockInfo::new(*id, &cid, len)]);
+                c!("deleting GC block" => delete_stmt.execute(&[id]));
+                Ok(Some((block_size, cid, len)))
+            } else {
+                Ok(None)
             }
-            tracing::trace!("deleting for real");
-            c!("deleting GC block" => delete_stmt.execute(&[id]));
-            n += 1;
-            Ok(())
         })?;
+        if let Some((size, cid, len)) = res {
+            stats.count -= 1;
+            stats.size -= size as u64;
+            cache_tracker.blocks_deleted(vec![BlockInfo::new(*id, &cid, len)]);
+            n += 1;
+        }
     }
 
     if n > 0 {
@@ -431,6 +399,8 @@ pub(crate) fn extend_temp_pin(
 ) -> crate::Result<()> {
     for link in links {
         let block_id = c!("getting ID for temp pinning" => get_or_create_id(txn, link));
+        // it is important that the above is a write action, because otherwise a rollback may
+        // invalidate the id stored in the TempPin in the below
         add_temp_pin(txn, block_id, pin).context("extending temp_pin")?;
     }
     Ok(())
@@ -470,6 +440,7 @@ pub(crate) fn put_block<C: ToSql>(
     links: impl IntoIterator<Item = C>,
     pin: Option<&mut TempPin>,
 ) -> crate::Result<PutBlockResult> {
+    // this is important: we need write lock on the table so that add_temp_pin is never rolled back
     let block_id = c!("getting put_block ID" => get_or_create_id(txn, key));
     let block_exists = txn
         .prepare_cached("SELECT COUNT(*) FROM blocks WHERE block_id = ?")
@@ -502,6 +473,7 @@ pub(crate) fn put_block<C: ToSql>(
     }
     if let Some(pin) = pin {
         // create a temporary alias for the block, even if it already exists
+        // this is only safe because get_or_create_id ensured that we have write lock on the table
         add_temp_pin(txn, block_id, pin).context("adding put_block temp_pin")?;
     }
     Ok(PutBlockResult {
@@ -727,7 +699,7 @@ pub(crate) fn init_pragmas(
     let journal_mode: String = c!("getting journal_mode" => conn.pragma_query_value(None, "journal_mode", |row| row.get(0)));
     let expected_journal_mode = if is_memory { "memory" } else { "wal" };
     assert_eq!(foreign_keys, 1);
-    assert_eq!(journal_mode, expected_journal_mode.to_owned());
+    assert_eq!(journal_mode, expected_journal_mode);
 
     conn.set_prepared_statement_cache_capacity(100);
 
@@ -738,6 +710,126 @@ pub(crate) fn init_pragmas(
     } else {
         Ok(())
     }
+}
+
+fn ws(s: impl AsRef<str>) -> String {
+    let mut r = String::new();
+    for (i, t) in s.as_ref().split_whitespace().enumerate() {
+        if i > 0 {
+            r.push(' ');
+        }
+        r.push_str(t);
+    }
+    r
+}
+
+fn ensure_table(txn: &Transaction, name: &str, sql: &str) -> crate::Result<bool> {
+    let mut in_db = c!("getting table (prep)" => txn
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' and name = ?"));
+    let in_db = c!("getting table" => in_db
+        .query_row([name], |row| row.get::<_, String>(0))
+        .optional());
+
+    if let Some(existing) = in_db {
+        let ex_ws = ws(existing);
+        let sql_ws = ws(sql);
+        if ex_ws == sql_ws {
+            // all good, it has the right definition already
+            tracing::debug!("table {} is up-to-date", name);
+            return Ok(false);
+        }
+        if let Some(prefix) = ex_ws.find("CONSTRAINT") {
+            // definitions must be equal up to the first constraint
+            if ex_ws[..prefix] != sql_ws[..prefix] {
+                return Err(BlockStoreError::Other(anyhow::anyhow!(
+                    "cannot update table `{}` due to incompatible data content",
+                    name
+                )));
+            }
+        } else {
+            // it is only okay to add constraints before the closing paren
+            let ex_trim = ex_ws.trim_end_matches(|c| " )".contains(c));
+            if sql_ws[..ex_trim.len()] != *ex_trim
+                || !sql_ws[ex_trim.len()..]
+                    .trim_start_matches(|c| ", ".contains(c))
+                    .starts_with("CONSTRAINT")
+            {
+                return Err(BlockStoreError::Other(anyhow::anyhow!(
+                    "cannot update table `{}` due to incompatible data content",
+                    name
+                )));
+            }
+        }
+        // okay, let’s try the update (knock wood)
+        tracing::debug!("updating table {}", name);
+        c!("change table" => txn.execute(
+            "UPDATE sqlite_master SET sql = ? WHERE type = 'table' and name = ?",
+            [sql, name]
+        ));
+        Ok(true)
+    } else {
+        tracing::debug!("creating table {}", name);
+        c!("creating table" => txn.execute_batch(sql));
+        Ok(false)
+    }
+}
+
+fn ensure_tables(txn: &Transaction, tables: &[(&str, &str)]) -> crate::Result<()> {
+    let version = c!("schema version" =>
+            txn.pragma_query_value(None, "schema_version", |r| r.get::<_, i64>(0)));
+    let mut changed = false;
+
+    c!("writable schema" => txn.pragma_update(None, "writable_schema", true));
+    for (name, sql) in tables {
+        changed |=
+            ensure_table(txn, *name, *sql).with_context(|| format!("ensuring table {}", name))?;
+    }
+
+    if changed {
+        c!("increment schema version" => txn.pragma_update(None, "schema_version", version + 1));
+    }
+    c!("writable schema" => txn.pragma_update(None, "writable_schema", false));
+
+    c!("integrity check" => txn.execute_batch("PRAGMA integrity_check"));
+    Ok(())
+}
+
+fn migrate_v0_v1(txn: &Transaction) -> crate::Result<()> {
+    let num_blocks: i64 = c!("getting block count" => txn.query_row("SELECT COUNT(*) FROM blocks_v0", [], |r| r.get(0)));
+    let mut stmt = c!("getting old blocks (prep)" => txn.prepare("SELECT * FROM blocks_v0"));
+    let block_iter = c!("getting old blocks" =>
+        stmt.query_map([], |row| { Ok((row.get::<_, Vec<u8>>(2)?, row.get::<_, Vec<u8>>(3)?)) }));
+    for (i, block) in block_iter.enumerate() {
+        if num_blocks != 0 && i % 1000 == 0 {
+            tracing::info!(
+                "converting to new blocks, block {} of {} ({}%)",
+                i,
+                num_blocks,
+                100 * i / (num_blocks as usize)
+            );
+        }
+        let (cid, data) = c!("reading blobs" => block);
+        let cid = Cid::try_from(cid).context("parsing CID")?;
+        let block = libipld::Block::<DefaultParams>::new(cid, data).context("creating block")?;
+        let mut set = BTreeSet::new();
+        block
+            .references(&mut set)
+            .context("extracting references")?;
+        put_block(
+            txn,
+            &block.cid().to_bytes(),
+            block.data(),
+            set.into_iter()
+                .map(|cid| cid.to_bytes())
+                .collect::<Vec<_>>(),
+            None,
+        )?;
+    }
+    tracing::info!("dropping table blocks_v0");
+    c!("dropping old blocks" => txn.execute_batch("DROP TABLE blocks_v0"));
+    drop(stmt);
+    tracing::info!("migration from v0 to v1 done!");
+    Ok(())
 }
 
 pub(crate) fn init_db(
@@ -753,21 +845,34 @@ pub(crate) fn init_db(
     conn.pragma_update(None, "synchronous", &synchronous.to_string())
         .ctx("setting Synchronous mode")?;
 
+    c!("foreign keys off" => conn.pragma_update(None, "foreign_keys", false));
+
     in_txn(conn, Some(("init", Duration::from_secs(1))), |txn| {
-        if c!("getting user_version" => user_version(txn)) == 0
-            && c!("checking table `blocks`" => table_exists(txn, "blocks"))
-        {
-            Ok(migrate_v0_v1(txn).context("migrating v0 -> v1")?)
-        } else {
-            c!(DEBUG "creating tables and indexes" => txn.execute_batch(INIT));
-            c!(DEBUG "cleaning up temp pins" => txn.execute_batch(CLEANUP_TEMP_PINS));
-            if let Err(BlockStoreError::SqliteError(QueryReturnedNoRows, _)) = get_store_stats(txn)
-            {
-                c!("faking store stats" => txn.execute_batch("INSERT INTO stats VALUES (0, 0);"));
-            }
-            Ok(())
+        let migrate = c!("getting user_version" => user_version(txn)) == 0
+            && c!("checking table `blocks`" => table_exists(txn, "blocks"));
+        if migrate {
+            tracing::info!("executing migration from v0 to v1");
+            c!("renaming blocks to v0" => txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0"));
+            // drop the old refs table, since the content can be extracted from blocks_v0
+            c!("dropping refs table" => txn.execute_batch("DROP TABLE IF EXISTS refs"));
         }
-    })
+
+        ensure_tables(txn, TABLES)?;
+        c!(DEBUG "creating indexes" => txn.execute_batch(INIT));
+        c!(DEBUG "cleaning up temp pins" => txn.execute_batch(CLEANUP_TEMP_PINS));
+        if let Err(BlockStoreError::SqliteError(QueryReturnedNoRows, _)) = get_store_stats(txn) {
+            c!("faking store stats" => txn.execute_batch("INSERT INTO stats VALUES (0, 0);"));
+        }
+
+        if migrate {
+            migrate_v0_v1(txn).context("migrating v0 -> v1")?;
+        }
+
+        Ok(())
+    })?;
+
+    c!("foreign keys on" => conn.pragma_update(None, "foreign_keys", false));
+    Ok(())
 }
 
 pub(crate) fn integrity_check(conn: &mut Connection) -> crate::Result<Vec<String>> {
