@@ -149,6 +149,10 @@ fn table_exists(txn: &Transaction, table: &str) -> rusqlite::Result<bool> {
 }
 
 macro_rules! c {
+    (DEBUG $t:literal => $e:expr) => {{
+        tracing::debug!($t);
+        $e.ctx(concat!($t, " (line ", line!(), ")"))?
+    }};
     ($t:literal => $e:expr) => {
         $e.ctx(concat!($t, " (line ", line!(), ")"))?
     };
@@ -850,10 +854,11 @@ pub(crate) fn init_db(
     in_txn(conn, Some(("init", Duration::from_secs(1))), |txn| {
         let user_version = c!("getting user_version" => user_version(txn));
         if user_version > 2 {
-            anyhow::bail!(
+            return Err(anyhow::anyhow!(
                 "found future DB version {} (downgrades are not supported)",
                 user_version
-            );
+            )
+            .into());
         }
 
         let migrate =

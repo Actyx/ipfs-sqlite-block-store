@@ -5,6 +5,7 @@ use crate::{
     cache::{SortByIdCacheTracker, SqliteCacheTracker},
     BlockStoreError, Config, DbPath, Result, StoreStats, TempPin,
 };
+use anyhow::Context;
 use fnv::FnvHashSet;
 use libipld::{
     cbor::DagCborCodec,
@@ -515,17 +516,18 @@ fn broken_db() -> anyhow::Result<()> {
     let tmp = TempDir::new("broken_db")?;
     let path = tmp.path().join("mini.sqlite");
     std::fs::copy("test-data/mini.sqlite", &path)?;
-    let mut store = BlockStore::open_path(DbPath::File(path), Config::default())?;
+    let mut store = BlockStore::open_path(DbPath::File(path), Config::default()).context("mini")?;
     assert!(store.integrity_check().is_ok());
 
     let path = tmp.path().join("broken.sqlite");
     std::fs::copy("test-data/broken.sqlite", &path)?;
     // don’t use the wrapper — we expect it to fail and don’t need a backup
-    let mut store = crate::BlockStore::<libipld::DefaultParams>::open_path(
+    assert!(crate::BlockStore::<libipld::DefaultParams>::open_path(
         DbPath::File(path),
-        Config::default(),
-    )?;
-    assert!(store.integrity_check().is_err());
+        Config::default()
+    )
+    .is_err());
+
     Ok(())
 }
 
