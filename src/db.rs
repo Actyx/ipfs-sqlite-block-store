@@ -117,7 +117,7 @@ const TABLES: &[(&str, &str)] = &[
 ];
 
 const INIT: &str = r#"
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 CREATE INDEX IF NOT EXISTS idx_refs_child_id
 ON refs (child_id);
@@ -848,8 +848,16 @@ pub(crate) fn init_db(
     c!("foreign keys off" => conn.pragma_update(None, "foreign_keys", false));
 
     in_txn(conn, Some(("init", Duration::from_secs(1))), |txn| {
-        let migrate = c!("getting user_version" => user_version(txn)) == 0
-            && c!("checking table `blocks`" => table_exists(txn, "blocks"));
+        let user_version = c!("getting user_version" => user_version(txn));
+        if user_version > 2 {
+            anyhow::bail!(
+                "found future DB version {} (downgrades are not supported)",
+                user_version
+            );
+        }
+
+        let migrate =
+            user_version == 0 && c!("checking table `blocks`" => table_exists(txn, "blocks"));
         if migrate {
             tracing::info!("executing migration from v0 to v1");
             c!("renaming blocks to v0" => txn.execute_batch("ALTER TABLE blocks RENAME TO blocks_v0"));
