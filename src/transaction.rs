@@ -8,8 +8,7 @@ use fnv::FnvHashSet;
 use libipld::{cid, codec::References, store::StoreParams, Cid, Ipld};
 use parking_lot::Mutex;
 use std::{
-    collections::HashSet, convert::TryFrom, iter::FromIterator, marker::PhantomData, mem,
-    sync::Arc, time::Duration,
+    collections::HashSet, convert::TryFrom, iter::FromIterator, marker::PhantomData, mem, sync::Arc,
 };
 
 pub struct Transaction<'a, S> {
@@ -139,11 +138,7 @@ where
     /// Given a root of a dag, gives all cids which we do not have data for.
     pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
-        let result = in_txn(
-            self.inner,
-            Some(("get_missing_blocks", Duration::from_millis(10))),
-            |txn| get_missing_blocks(txn, cid),
-        )?;
+        let result = in_txn(self.inner, None, |txn| get_missing_blocks(txn, cid))?;
         let res = result
             .iter()
             .map(Cid::try_from)
@@ -173,19 +168,15 @@ where
             .iter()
             .map(CidBytes::try_from)
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
-        let res = in_txn(
-            self.inner,
-            Some(("put block", Duration::from_millis(100))),
-            move |txn| {
-                put_block(
-                    txn,
-                    &cid_bytes,
-                    block.data(),
-                    links.iter().copied(),
-                    pin.as_deref_mut(),
-                )
-            },
-        )?;
+        let res = in_txn(self.inner, None, move |txn| {
+            put_block(
+                txn,
+                &cid_bytes,
+                block.data(),
+                links.iter().copied(),
+                pin.as_deref_mut(),
+            )
+        })?;
         let write_info = WriteInfo::new(
             BlockInfo::new(res.id, block.cid(), block.data().len()),
             res.block_exists,
