@@ -501,6 +501,8 @@ where
     ///
     /// Returns true if either size targets are met or there are no unpinned blocks left.
     pub fn incremental_gc(&mut self, min_blocks: usize, max_duration: Duration) -> Result<bool> {
+        let stats = self.get_store_stats()?;
+        let _span = tracing::debug_span!("incGC", stats = ?&stats).entered();
         self.cleanup_temp_pins()?;
         let ret = incremental_gc(
             &mut self.conn,
@@ -509,10 +511,14 @@ where
             self.config.size_targets,
             &self.config.cache_tracker,
         )?;
-        in_txn(&mut self.conn, None, |txn| {
-            txn.execute_batch("PRAGMA incremental_vacuum")
-                .ctx("incremental vacuum")
-        })?;
+        in_txn(
+            &mut self.conn,
+            Some(("incremental_vacuum", Duration::from_millis(500))),
+            |txn| {
+                txn.execute_batch("PRAGMA incremental_vacuum")
+                    .ctx("incremental vacuum")
+            },
+        )?;
         Ok(ret)
     }
 }

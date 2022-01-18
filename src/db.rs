@@ -14,7 +14,7 @@
 use libipld::{Cid, DefaultParams};
 use rusqlite::{
     config::DbConfig,
-    params,
+    params, params_from_iter,
     types::FromSql,
     Connection,
     Error::{QueryReturnedNoRows, SqliteFailure},
@@ -35,7 +35,6 @@ use crate::{
     BlockStoreError, SizeTargets, StoreStats, Synchronous, TempPin,
 };
 use anyhow::Context as _;
-#[cfg(test)]
 use itertools::Itertools;
 
 const PRAGMAS: &str = r#"
@@ -315,7 +314,7 @@ pub(crate) fn incremental_gc(
             tracing::info!(removed = n, "finished, target reached");
             break;
         }
-        let res = in_txn(conn, None, |txn| {
+        let res = in_txn(conn, Some(("", Duration::from_millis(100))), |txn| {
             // get block size and check whether now referenced
             let mut block_size_stmt = c!("getting GC block (prep)" => txn.prepare_cached(
                 r#"
@@ -367,23 +366,69 @@ pub(crate) fn incremental_gc(
     if n > 0 {
         // the above only removed the blocks, now we need to clean up those cids that we don’t
         // need anymore
-        in_txn(
+
+        // doing this in one transaction may block the DB for too long, so get the IDs first and then
+        // remove them in batches
+        let ids = in_txn(
             conn,
-            Some(("cleaning up CIDs", Duration::from_secs(1))),
+            Some(("getting IDs to clean up", Duration::from_secs(5))),
             |txn| {
-                let mut del_cid = c!("deleting CIDs (prep)" => txn.prepare_cached(
-                    // refs.parent_id is not a blocker because if we delete this it means that
-                    // the block is gone
-                    "DELETE FROM cids WHERE \
+                let mut stmt = c!("getting IDs (prep)" => txn.prepare_cached(
+                        // refs.parent_id is not a blocker because if we delete this it means that
+                        // the block is gone
+                        "SELECT id FROM cids WHERE \
                         id NOT IN (SELECT block_id FROM blocks) AND \
                         id NOT IN (SELECT block_id FROM aliases) AND \
                         id NOT IN (SELECT child_id FROM refs) AND \
-                        id NOT IN (SELECT block_id FROM temp_pins)"
+                        id NOT IN (SELECT block_id FROM temp_pins)",
                 ));
-                c!("deleting CIDs" => del_cid.execute([]));
-                Ok(())
+                let ids = c!("getting IDs" => stmt.query_map([], |row| row.get(0)));
+                ids.collect::<Result<Vec<i64>, _>>().ctx("ids")
             },
         )?;
+
+        tracing::debug!("cleaning up {} IDs", ids.len());
+
+        // this number is linked to the prepared query below!
+        const BATCH_SIZE: usize = 10;
+        let mut v = Vec::with_capacity(BATCH_SIZE);
+        for ids in &ids.into_iter().chunks(BATCH_SIZE) {
+            v.extend(ids);
+            if v.len() == BATCH_SIZE {
+                in_txn(
+                    conn,
+                    Some(("cleaning up CIDs", Duration::from_millis(100))),
+                    |txn| {
+                        let mut del_cid = c!("deleting CIDs (prep)" => txn.prepare_cached(
+                            "DELETE FROM cids WHERE \
+                                id in (VALUES (?), (?), (?), (?), (?), (?), (?), (?), (?), (?)) AND \
+                                id NOT IN (SELECT block_id FROM blocks) AND \
+                                id NOT IN (SELECT block_id FROM aliases) AND \
+                                id NOT IN (SELECT child_id FROM refs) AND \
+                                id NOT IN (SELECT block_id FROM temp_pins)"
+                        ));
+                        c!("deleting CIDs" => del_cid.execute(params_from_iter(v.iter())));
+                        Ok(())
+                    },
+                )?;
+            } else {
+                in_txn(conn, None, |txn| {
+                    let mut stmt = c!("deleting CIDs (prep)" => txn.prepare_cached(
+                        "DELETE FROM cids WHERE \
+                            id = ? AND \
+                            id NOT IN (SELECT block_id FROM blocks) AND \
+                            id NOT IN (SELECT block_id FROM aliases) AND \
+                            id NOT IN (SELECT child_id FROM refs) AND \
+                            id NOT IN (SELECT block_id FROM temp_pins)"
+                    ));
+                    for id in v.iter() {
+                        c!("deleting CIDs" => stmt.execute([id]));
+                    }
+                    Ok(())
+                })?;
+            }
+            v.clear();
+        }
     }
 
     Ok(ret_val)
@@ -918,7 +963,7 @@ pub(crate) fn in_txn<T>(
     name: Option<(&str, Duration)>,
     mut f: impl FnMut(&Transaction) -> crate::Result<T>,
 ) -> crate::Result<T> {
-    let _span = if let Some((name, _)) = name {
+    let _span = if let Some(name) = name.map(|x| x.0).filter(|x| !x.is_empty()) {
         tracing::debug_span!("txn", "{}", name).entered()
     } else {
         tracing::trace_span!("txn").entered()

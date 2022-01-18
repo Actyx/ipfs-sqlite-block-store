@@ -1,6 +1,6 @@
 [package]
 name = "ipfs-sqlite-block-store"
-version = "0.11.2"
+version = "0.11.3"
 repository = "https://github.com/actyx/ipfs-sqlite-block-store"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "David Craven <david@craven.ch>", "Actyx AG"]
 edition = "2018"
@@ -13,13 +13,13 @@ anyhow = "1.0.52"
 derive_more = "0.99.17"
 fnv = "1.0.7"
 futures = "0.3.19"
+itertools = "0.10.3"
 libipld = { version = "0.12.0", default-features = false }
 parking_lot = "0.11.2"
 rusqlite = { version = "0.26.3", features = ["backup", "bundled", "unlock_notify"] }
 tracing = "0.1.29"
 
 [dev-dependencies]
-itertools = "0.10.3"
 libipld = { version = "0.12.0", default-features = false, features = ["derive", "dag-cbor"] }
 maplit = "1.0.2"
 multihash = { version = "0.14.0", default-features = false, features = ["sha2"] }

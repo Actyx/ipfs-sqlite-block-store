@@ -4,6 +4,8 @@ This changelog was started sometime after the 0.7 release.
 
 0.11.1: permit more schema differences when upgrading (case insensitive, unique vs. primary key, autoincrement)
 
+0.11.3: split up transaction for cleaning up CIDs to avoid blocking the DB for long times
+
 ## Release 0.11
 
 - automatically upgrade DB schema to new foreign key definitions
