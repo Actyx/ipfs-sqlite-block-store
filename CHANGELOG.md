@@ -6,6 +6,8 @@ This changelog was started sometime after the 0.7 release.
 
 0.11.3: split up transaction for cleaning up CIDs to avoid blocking the DB for long times
 
+0.11.4: improve logging of startup latencies and only do integrity check after schema change
+
 ## Release 0.11
 
 - automatically upgrade DB schema to new foreign key definitions
