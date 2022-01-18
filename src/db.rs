@@ -835,17 +835,25 @@ fn ensure_tables(txn: &Transaction, tables: &[(&str, &str)]) -> crate::Result<()
     let mut changed = false;
 
     c!("writable schema" => txn.pragma_update(None, "writable_schema", true));
+    tracing::debug!("schema now read-write");
     for (name, sql) in tables {
         changed |=
             ensure_table(txn, *name, *sql).with_context(|| format!("ensuring table {}", name))?;
     }
+    tracing::debug!("schemas checked");
 
     if changed {
-        c!("increment schema version" => txn.pragma_update(None, "schema_version", version + 1));
+        let version = version + 1;
+        c!("increment schema version" => txn.pragma_update(None, "schema_version", version));
+        tracing::debug!("schema version updated to {}", version);
     }
     c!("writable schema" => txn.pragma_update(None, "writable_schema", false));
+    tracing::debug!("schema read-only again");
 
-    c!("integrity check" => txn.execute_batch("PRAGMA integrity_check"));
+    if changed {
+        c!("integrity check" => txn.execute_batch("PRAGMA integrity_check"));
+        tracing::debug!("integrity check done");
+    }
     Ok(())
 }
 
