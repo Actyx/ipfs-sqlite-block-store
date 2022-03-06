@@ -61,7 +61,7 @@ where
     /// Set or delete an alias
     pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> Result<()> {
         let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
-        in_txn(self.inner, None, move |txn| {
+        in_txn(self.inner, None, true, move |txn| {
             alias(txn, name.as_ref(), link.as_ref())
         })?;
         Ok(())
@@ -70,14 +70,14 @@ where
     /// Returns the aliases referencing a cid.
     pub fn reverse_alias(&mut self, cid: &Cid) -> Result<Option<HashSet<Vec<u8>>>> {
         let cid = CidBytes::try_from(cid)?;
-        in_txn(self.inner, None, move |txn| {
+        in_txn(self.inner, None, true, move |txn| {
             reverse_alias(txn, cid.as_ref())
         })
     }
 
     /// Resolves an alias to a cid.
     pub fn resolve(&mut self, name: impl AsRef<[u8]>) -> Result<Option<Cid>> {
-        in_txn(self.inner, None, move |txn| {
+        in_txn(self.inner, None, true, move |txn| {
             resolve::<CidBytes>(txn, name.as_ref())?
                 .map(|c| Cid::try_from(&c))
                 .transpose()
@@ -93,7 +93,7 @@ where
     /// Extend temp pin with an additional cid
     pub fn extend_temp_pin(&mut self, pin: &mut TempPin, link: &Cid) -> Result<()> {
         let link = CidBytes::try_from(link)?;
-        in_txn(self.inner, None, move |txn| {
+        in_txn(self.inner, None, true, move |txn| {
             extend_temp_pin(txn, pin, vec![link])
         })?;
         Ok(())
@@ -104,25 +104,29 @@ where
     /// Note that this does not necessarily mean that the store has the data for the cid.
     pub fn has_cid(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
-        in_txn(self.inner, None, move |txn| has_cid(txn, cid))
+        in_txn(self.inner, None, false, move |txn| has_cid(txn, cid))
     }
 
     /// Checks if the store has the data for a cid
     pub fn has_block(&mut self, cid: &Cid) -> Result<bool> {
         let cid = CidBytes::try_from(cid)?;
-        in_txn(self.inner, None, move |txn| has_block(txn, cid))
+        in_txn(self.inner, None, false, move |txn| has_block(txn, cid))
     }
 
     /// Get all cids that the store knows about
     pub fn get_known_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
-        let res = in_txn(self.inner, None, move |txn| get_known_cids::<CidBytes>(txn))?;
+        let res = in_txn(self.inner, None, false, move |txn| {
+            get_known_cids::<CidBytes>(txn)
+        })?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
 
     /// Get all cids for which the store has blocks
     pub fn get_block_cids<C: FromIterator<Cid>>(&mut self) -> Result<C> {
-        let res = in_txn(self.inner, None, move |txn| get_block_cids::<CidBytes>(txn))?;
+        let res = in_txn(self.inner, None, false, move |txn| {
+            get_block_cids::<CidBytes>(txn)
+        })?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
@@ -130,7 +134,9 @@ where
     /// Get descendants of a cid
     pub fn get_descendants<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
-        let res = in_txn(self.inner, None, move |txn| get_descendants(txn, cid))?;
+        let res = in_txn(self.inner, None, false, move |txn| {
+            get_descendants(txn, cid)
+        })?;
         let res = res.iter().map(Cid::try_from).collect::<cid::Result<C>>()?;
         Ok(res)
     }
@@ -138,7 +144,7 @@ where
     /// Given a root of a dag, gives all cids which we do not have data for.
     pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
-        let result = in_txn(self.inner, None, |txn| get_missing_blocks(txn, cid))?;
+        let result = in_txn(self.inner, None, false, |txn| get_missing_blocks(txn, cid))?;
         let res = result
             .iter()
             .map(Cid::try_from)
@@ -148,7 +154,8 @@ where
 
     /// list all aliases
     pub fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&mut self) -> Result<C> {
-        let result: Vec<(Vec<u8>, CidBytes)> = in_txn(self.inner, None, move |txn| aliases(txn))?;
+        let result: Vec<(Vec<u8>, CidBytes)> =
+            in_txn(self.inner, None, false, move |txn| aliases(txn))?;
         let res = result
             .into_iter()
             .map(|(alias, cid)| {
@@ -168,7 +175,8 @@ where
             .iter()
             .map(CidBytes::try_from)
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
-        let res = in_txn(self.inner, None, move |txn| {
+        let res = in_txn(self.inner, None, true, move |txn| {
+            #[allow(clippy::needless_option_as_deref)]
             put_block(
                 txn,
                 &cid_bytes,
@@ -187,7 +195,7 @@ where
 
     /// Get a block
     pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
-        let response = in_txn(self.inner, None, move |txn| {
+        let response = in_txn(self.inner, None, false, move |txn| {
             get_block(txn, &CidBytes::try_from(cid)?)
         })?;
         if let Some(info) = response
@@ -203,7 +211,7 @@ where
     ///
     /// The stats are kept up to date, so this is fast.
     pub fn get_store_stats(&mut self) -> Result<StoreStats> {
-        in_txn(self.inner, None, move |txn| get_store_stats(txn))
+        in_txn(self.inner, None, false, get_store_stats)
     }
 
     /// Commit and consume the transaction. Default is to not commit.

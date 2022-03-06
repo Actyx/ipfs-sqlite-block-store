@@ -74,7 +74,10 @@ use std::{
     mem,
     ops::DerefMut,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tracing::*;
@@ -212,6 +215,7 @@ pub struct BlockStore<S> {
     expired_temp_pins: Arc<Mutex<Vec<i64>>>,
     config: Config,
     db_path: DbPath,
+    recompute_done: Arc<AtomicBool>,
     _s: PhantomData<S>,
 }
 
@@ -219,6 +223,9 @@ pub struct BlockStore<S> {
 pub struct StoreStats {
     count: u64,
     size: u64,
+    page_size: u64,
+    used_pages: u64,
+    free_pages: u64,
 }
 
 impl StoreStats {
@@ -230,6 +237,29 @@ impl StoreStats {
     /// Total size of blocks in the store
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    /// Page size used by the SQLite DB
+    pub fn page_size(&self) -> u64 {
+        self.page_size
+    }
+
+    /// Number of used pages in the SQLite DB
+    ///
+    /// Multiply this with [`page_size`](#method.page_size) to obtain an upper bound
+    /// on how much space is actually used. The value returned by [`size`](#method.size)
+    /// will always be smaller than this, since it only counts net block data, without
+    /// overhead. A large difference suggests the need for calling `vacuum`.
+    pub fn used_pages(&self) -> u64 {
+        self.used_pages
+    }
+
+    /// Number of unused pages in the SQLite DB
+    ///
+    /// The DB file can be shrunk by at least this page count by calling `vacuum`, which often is
+    /// a long-running procedure.
+    pub fn free_pages(&self) -> u64 {
+        self.free_pages
     }
 }
 
@@ -311,6 +341,7 @@ where
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             db_path,
+            recompute_done: Arc::new(AtomicBool::new(false)),
             _s: PhantomData,
         };
         if !is_memory {
@@ -319,12 +350,19 @@ where
                 if let Err(e) = recompute_store_stats(&mut conn.conn) {
                     tracing::error!("cannot recompute store stats: {}", e);
                 }
+                // This is done to avoid GC doing a wal_checkpoint(RESTART) while the above
+                // long-running query is ongoing, since that would block all writers during
+                // that period.
+                conn.recompute_done.store(true, Ordering::SeqCst);
             });
+        } else {
+            this.recompute_done.store(true, Ordering::SeqCst);
         }
         if this.config.cache_tracker.has_persistent_state() {
             let ids = in_txn(
                 &mut this.conn,
                 Some(("get IDs", Duration::from_secs(1))),
+                false,
                 get_ids,
             )?;
             this.config.cache_tracker.retain_ids(&ids);
@@ -356,6 +394,7 @@ where
             expired_temp_pins: self.expired_temp_pins.clone(),
             config: self.config.clone(),
             db_path: self.db_path.clone(),
+            recompute_done: self.recompute_done.clone(),
             _s: PhantomData,
         })
     }
@@ -400,6 +439,7 @@ where
         let ids = in_txn(
             &mut conn,
             Some(("get ids", Duration::from_secs(1))),
+            false,
             get_ids,
         )?;
         config.cache_tracker.retain_ids(&ids);
@@ -408,19 +448,20 @@ where
             expired_temp_pins: Arc::new(Mutex::new(Vec::new())),
             config,
             db_path: DbPath::Memory,
+            recompute_done: Arc::new(AtomicBool::new(true)),
             _s: PhantomData,
         })
     }
 
     pub fn backup(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        in_txn(&mut self.conn, None, move |txn| {
+        in_txn(&mut self.conn, None, false, move |txn| {
             txn.backup(DatabaseName::Main, path.as_ref(), None)
                 .ctx("backing up DB")
         })
     }
 
     pub fn flush(&mut self) -> crate::Result<()> {
-        in_txn(&mut self.conn, None, |txn| {
+        in_txn(&mut self.conn, None, false, |txn| {
             txn.pragma_update(None, "wal_checkpoint", &"TRUNCATE")
                 .ctx("flushing WAL")
         })
@@ -465,6 +506,7 @@ where
         in_txn(
             &mut self.conn,
             Some(("dropping expired temp_pins", Duration::from_millis(100))),
+            true,
             move |txn| {
                 // get rid of dropped temp aliases, this should be fast
                 for id in expired_temp_pins.iter() {
@@ -480,6 +522,7 @@ where
     /// This is the same as running incremental GC without limits, plus a full SQLITE VACUUM.
     pub fn gc(&mut self) -> Result<()> {
         self.cleanup_temp_pins()?;
+        self.flush()?;
         incremental_gc(
             &mut self.conn,
             usize::MAX,
@@ -491,10 +534,22 @@ where
         Ok(())
     }
 
+    fn maybe_checkpoint(&mut self) -> Result<()> {
+        if self.recompute_done.load(Ordering::SeqCst) {
+            self.conn
+                .pragma_update(None, "journal_size_limit", 10_000_000i64)
+                .ctx("setting journal_size_limit")?;
+            self.conn
+                .pragma_update(None, "wal_checkpoint", &"RESTART")
+                .ctx("running wal_checkpoint(RESTART)")?;
+        }
+        Ok(())
+    }
+
     /// Perform an incremental garbage collection.
     ///
     /// Will collect unpinned blocks until either the size targets are met again, or at minimum
-    /// `min_blocks` blocks are collected. Then it will continue connecting blocks until `max_duration`
+    /// `min_blocks` blocks are collected. Then it will continue collecting blocks until `max_duration`
     /// is elapsed.
     ///
     /// Note that this might significantly exceed `max_duration` for various reasons.
@@ -504,6 +559,7 @@ where
         let stats = self.get_store_stats()?;
         let _span = tracing::debug_span!("incGC", stats = ?&stats).entered();
         self.cleanup_temp_pins()?;
+        self.maybe_checkpoint()?;
         let ret = incremental_gc(
             &mut self.conn,
             min_blocks,
@@ -511,9 +567,11 @@ where
             self.config.size_targets,
             &self.config.cache_tracker,
         )?;
+        self.maybe_checkpoint()?;
         in_txn(
             &mut self.conn,
             Some(("incremental_vacuum", Duration::from_millis(500))),
+            false,
             |txn| {
                 txn.execute_batch("PRAGMA incremental_vacuum")
                     .ctx("incremental vacuum")
@@ -595,6 +653,7 @@ where
     {
         let mut txn = self.transaction();
         for block in blocks {
+            #[allow(clippy::needless_option_as_deref)]
             txn.put_block(&block, pin.as_deref_mut())?;
         }
         txn.commit()

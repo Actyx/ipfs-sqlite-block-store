@@ -48,7 +48,7 @@ struct TokioSpawner;
 
 impl Spawner for TokioSpawner {
     fn spawn_blocking(&self, f: impl FnOnce() + Send + 'static) {
-        tokio::task::spawn_blocking(|| f());
+        tokio::task::spawn_blocking(f);
     }
 }
 

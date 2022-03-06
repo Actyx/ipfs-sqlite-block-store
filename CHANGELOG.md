@@ -8,6 +8,8 @@ This changelog was started sometime after the 0.7 release.
 
 0.11.4: improve logging of startup latencies and only do integrity check after schema change
 
+0.11.5: truncate WAL before and after GC and give more information about DB stats
+
 ## Release 0.11
 
 - automatically upgrade DB schema to new foreign key definitions

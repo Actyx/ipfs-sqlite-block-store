@@ -19,7 +19,7 @@ use rusqlite::{
     Connection,
     Error::{QueryReturnedNoRows, SqliteFailure},
     ErrorCode::DatabaseBusy,
-    OptionalExtension, ToSql, Transaction,
+    OptionalExtension, ToSql, Transaction, TransactionBehavior,
 };
 use std::{
     collections::{BTreeSet, HashSet},
@@ -163,8 +163,23 @@ fn get_id(txn: &Transaction, cid: impl ToSql) -> rusqlite::Result<Option<i64>> {
         .optional()
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct BlockStats {
+    count: u64,
+    size: u64,
+}
+
+impl From<StoreStats> for BlockStats {
+    fn from(s: StoreStats) -> Self {
+        Self {
+            count: s.count,
+            size: s.size,
+        }
+    }
+}
+
 /// returns the number and size of blocks, excluding orphaned blocks, computed from scratch
-pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
+pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<BlockStats> {
     let (count, size): (i64, i64) = txn
         .prepare(
             "SELECT COUNT(id), COALESCE(SUM(LENGTH(block)), 0) \
@@ -173,7 +188,7 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
         .ctx("computing store stats (prep)")?
         .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
         .ctx("computing store stats")?;
-    Ok(StoreStats {
+    Ok(BlockStats {
         count: u64::try_from(count).ctx("computed count")?,
         size: u64::try_from(size).ctx("computed size")?,
     })
@@ -183,7 +198,7 @@ pub(crate) fn compute_store_stats(txn: &Transaction) -> crate::Result<StoreStats
 pub(crate) fn recompute_store_stats(conn: &mut Connection) -> crate::Result<()> {
     let _span = tracing::debug_span!("check stats").entered();
     // first a read-only transaction to determine the true base
-    let (stats, truth) = in_txn(conn, None, |txn| {
+    let (stats, truth) = in_txn(conn, None, false, |txn| {
         let stats = get_store_stats(txn)?;
         let truth = compute_store_stats(txn)?;
         Ok((stats, truth))
@@ -191,9 +206,9 @@ pub(crate) fn recompute_store_stats(conn: &mut Connection) -> crate::Result<()> 
 
     tracing::debug!("applying findings");
     // now compute the correction based on what the above snapshot has calculated
-    in_txn(conn, None, |txn| {
-        let stats2 = get_store_stats(txn)?;
-        let new_stats = StoreStats {
+    in_txn(conn, None, true, |txn| {
+        let stats2 = BlockStats::from(get_store_stats(txn)?);
+        let new_stats = BlockStats {
             count: stats2.count - stats.count + truth.count,
             size: stats2.size - stats.size + truth.size,
         };
@@ -223,9 +238,21 @@ pub(crate) fn get_store_stats(txn: &Transaction) -> crate::Result<StoreStats> {
         .ctx("getting store stats (prep)")?
         .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
         .ctx("getting store stats")?;
+    let page_size = txn
+        .pragma_query_value(None, "page_size", |r| r.get::<_, i64>(0))
+        .ctx("getting page_size")?;
+    let used_pages = txn
+        .pragma_query_value(None, "page_count", |r| r.get::<_, i64>(0))
+        .ctx("getting page_count")?;
+    let free_pages = txn
+        .pragma_query_value(None, "freelist_count", |r| r.get::<_, i64>(0))
+        .ctx("getting freelist_count")?;
     let result = StoreStats {
         count: u64::try_from(count).ctx("getting count")?,
         size: u64::try_from(size).ctx("getting size")?,
+        page_size: u64::try_from(page_size).ctx("getting page_size")?,
+        used_pages: u64::try_from(used_pages).ctx("getting used_pages")?,
+        free_pages: u64::try_from(free_pages).ctx("getting free_pages")?,
     };
     Ok(result)
 }
@@ -255,7 +282,7 @@ pub(crate) fn incremental_gc(
 
     // get the store stats from the stats table:
     // if we don't exceed any of the size targets, there is nothing to do
-    let mut stats = in_txn(conn, None, get_store_stats)?;
+    let mut stats = in_txn(conn, None, false, get_store_stats)?;
     if !size_targets.exceeded(&stats) {
         tracing::info!(
             blocks = display(stats.count),
@@ -270,6 +297,7 @@ pub(crate) fn incremental_gc(
     let mut ids = in_txn(
         conn,
         Some(("getting unreferenced CIDs", Duration::from_secs(3))),
+        false,
         |txn| {
             // find all ids that are not pinned (directly or indirectly)
             let mut id_query = txn
@@ -314,7 +342,7 @@ pub(crate) fn incremental_gc(
             tracing::info!(removed = n, "finished, target reached");
             break;
         }
-        let res = in_txn(conn, Some(("", Duration::from_millis(100))), |txn| {
+        let res = in_txn(conn, Some(("", Duration::from_millis(100))), true, |txn| {
             // get block size and check whether now referenced
             let mut block_size_stmt = c!("getting GC block (prep)" => txn.prepare_cached(
                 r#"
@@ -372,6 +400,7 @@ pub(crate) fn incremental_gc(
         let ids = in_txn(
             conn,
             Some(("getting IDs to clean up", Duration::from_secs(5))),
+            false,
             |txn| {
                 let mut stmt = c!("getting IDs (prep)" => txn.prepare_cached(
                         // refs.parent_id is not a blocker because if we delete this it means that
@@ -398,6 +427,7 @@ pub(crate) fn incremental_gc(
                 in_txn(
                     conn,
                     Some(("cleaning up CIDs", Duration::from_millis(100))),
+                    false,
                     |txn| {
                         let mut del_cid = c!("deleting CIDs (prep)" => txn.prepare_cached(
                             "DELETE FROM cids WHERE \
@@ -412,7 +442,7 @@ pub(crate) fn incremental_gc(
                     },
                 )?;
             } else {
-                in_txn(conn, None, |txn| {
+                in_txn(conn, None, false, |txn| {
                     let mut stmt = c!("deleting CIDs (prep)" => txn.prepare_cached(
                         "DELETE FROM cids WHERE \
                             id = ? AND \
@@ -910,7 +940,7 @@ pub(crate) fn init_db(
 
     c!("foreign keys off" => conn.pragma_update(None, "foreign_keys", false));
 
-    in_txn(conn, Some(("init", Duration::from_secs(1))), |txn| {
+    in_txn(conn, Some(("init", Duration::from_secs(1))), true, |txn| {
         let user_version = c!("getting user_version" => user_version(txn));
         if user_version > 2 {
             return Err(anyhow::anyhow!(
@@ -949,7 +979,7 @@ pub(crate) fn init_db(
 
 pub(crate) fn integrity_check(conn: &mut Connection) -> crate::Result<Vec<String>> {
     let _span = tracing::debug_span!("db integrity check").entered();
-    in_txn(conn, None, |txn| {
+    in_txn(conn, None, false, |txn| {
         let mut stmt = c!("checking sqlite integrity (prep)" => txn.prepare("SELECT integrity_check FROM pragma_integrity_check"));
         let result = c!("checking sqlite integrity" => stmt.query_map([], |row| row.get(0)))
             .collect::<rusqlite::Result<Vec<String>>>()
@@ -969,6 +999,7 @@ pub(crate) fn integrity_check(conn: &mut Connection) -> crate::Result<Vec<String
 pub(crate) fn in_txn<T>(
     conn: &mut Connection,
     name: Option<(&str, Duration)>,
+    immediate: bool,
     mut f: impl FnMut(&Transaction) -> crate::Result<T>,
 ) -> crate::Result<T> {
     let _span = if let Some(name) = name.map(|x| x.0).filter(|x| !x.is_empty()) {
@@ -979,7 +1010,9 @@ pub(crate) fn in_txn<T>(
     let started = Instant::now();
     let mut attempts = 0;
     loop {
-        let txn = c!("beginning transaction" => conn.transaction());
+        let txn = c!("beginning transaction" =>
+            if immediate { conn.transaction_with_behavior(TransactionBehavior::Immediate) } else { conn.transaction() }
+        );
         let result = f(&txn);
         let result = result.and_then(|t| {
             c!("committing transaction" => txn.commit());
