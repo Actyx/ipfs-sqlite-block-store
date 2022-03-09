@@ -32,7 +32,7 @@ use crate::{
     cache::{BlockInfo, CacheTracker},
     cidbytes::CidBytes,
     error::Context,
-    BlockStoreError, SizeTargets, StoreStats, Synchronous, TempPin,
+    BlockStoreError, SizeTargets, StoreStats, Synchronous,
 };
 use anyhow::Context as _;
 use itertools::Itertools;
@@ -206,7 +206,7 @@ pub(crate) fn recompute_store_stats(conn: &mut Connection) -> crate::Result<()> 
 
     tracing::debug!("applying findings");
     // now compute the correction based on what the above snapshot has calculated
-    in_txn(conn, None, true, |txn| {
+    in_txn(conn, None, true, move |txn| {
         let stats2 = BlockStats::from(get_store_stats(txn)?);
         let new_stats = BlockStats {
             count: stats2.count - stats.count + truth.count,
@@ -332,7 +332,7 @@ pub(crate) fn incremental_gc(
 
     let mut n = 0;
     let mut ret_val = true;
-    for id in ids.iter() {
+    for id in ids.into_iter() {
         if n >= min_blocks && t0.elapsed() > max_duration {
             tracing::info!(removed = n, "stopping due to time constraint");
             ret_val = false;
@@ -342,10 +342,14 @@ pub(crate) fn incremental_gc(
             tracing::info!(removed = n, "finished, target reached");
             break;
         }
-        let res = in_txn(conn, Some(("", Duration::from_millis(100))), true, |txn| {
-            // get block size and check whether now referenced
-            let mut block_size_stmt = c!("getting GC block (prep)" => txn.prepare_cached(
-                r#"
+        let res = in_txn(
+            conn,
+            Some(("", Duration::from_millis(100))),
+            true,
+            move |txn| {
+                // get block size and check whether now referenced
+                let mut block_size_stmt = c!("getting GC block (prep)" => txn.prepare_cached(
+                    r#"
                 WITH RECURSIVE
                     ancestor(id) AS (
                         SELECT ?
@@ -356,37 +360,38 @@ pub(crate) fn incremental_gc(
                 SELECT LENGTH(block), cid, (SELECT count(*) FROM names)
                     FROM cids, blocks ON id = block_id WHERE id = ?;
                 "#,
-            ));
-            let mut update_stats_stmt = c!("updating GC stats (prep)" =>
+                ));
+                let mut update_stats_stmt = c!("updating GC stats (prep)" =>
                 txn.prepare_cached("UPDATE stats SET count = count - 1, size = size - ?"));
-            let mut delete_stmt = c!("deleting GC block (prep)" => txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?"));
+                let mut delete_stmt = c!("deleting GC block (prep)" => txn.prepare_cached("DELETE FROM blocks WHERE block_id = ?"));
 
-            tracing::trace!("deleting id {}", id);
+                tracing::trace!("deleting id {}", id);
 
-            let block_size: Option<(i64, CidBytes, i64)> = block_size_stmt
-                .query_row([id, id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                .optional()
-                .ctx("getting GC block")?;
-            tracing::trace!(block_size = ?&block_size);
-            if let Some((block_size, cid, names)) = block_size {
-                if names != 0 {
-                    // block is referenced again
-                    return Ok(None);
+                let block_size: Option<(i64, CidBytes, i64)> = block_size_stmt
+                    .query_row([id, id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .optional()
+                    .ctx("getting GC block")?;
+                tracing::trace!(block_size = ?&block_size);
+                if let Some((block_size, cid, names)) = block_size {
+                    if names != 0 {
+                        // block is referenced again
+                        return Ok(None);
+                    }
+                    let cid = Cid::try_from(&cid)?;
+                    let len = c!("getting GC block size" => usize::try_from(block_size));
+                    c!("updating GC stats" => update_stats_stmt.execute([block_size]));
+                    tracing::trace!("stats updated");
+                    c!("deleting GC block" => delete_stmt.execute(params![id]));
+                    Ok(Some((block_size, cid, len)))
+                } else {
+                    Ok(None)
                 }
-                let cid = Cid::try_from(&cid)?;
-                let len = c!("getting GC block size" => usize::try_from(block_size));
-                c!("updating GC stats" => update_stats_stmt.execute([block_size]));
-                tracing::trace!("stats updated");
-                c!("deleting GC block" => delete_stmt.execute(&[id]));
-                Ok(Some((block_size, cid, len)))
-            } else {
-                Ok(None)
-            }
-        })?;
+            },
+        )?;
         if let Some((size, cid, len)) = res {
             stats.count -= 1;
             stats.size -= size as u64;
-            cache_tracker.blocks_deleted(vec![BlockInfo::new(*id, &cid, len)]);
+            cache_tracker.blocks_deleted(vec![BlockInfo::new(id, &cid, len)]);
             n += 1;
         }
     }
@@ -420,15 +425,15 @@ pub(crate) fn incremental_gc(
 
         // this number is linked to the prepared query below!
         const BATCH_SIZE: usize = 10;
-        let mut v = Vec::with_capacity(BATCH_SIZE);
         for ids in &ids.into_iter().chunks(BATCH_SIZE) {
+            let mut v = Vec::with_capacity(BATCH_SIZE);
             v.extend(ids);
             if v.len() == BATCH_SIZE {
                 in_txn(
                     conn,
                     Some(("cleaning up CIDs", Duration::from_millis(100))),
                     false,
-                    |txn| {
+                    move |txn| {
                         let mut del_cid = c!("deleting CIDs (prep)" => txn.prepare_cached(
                             "DELETE FROM cids WHERE \
                                 id in (VALUES (?), (?), (?), (?), (?), (?), (?), (?), (?), (?)) AND \
@@ -442,7 +447,7 @@ pub(crate) fn incremental_gc(
                     },
                 )?;
             } else {
-                in_txn(conn, None, false, |txn| {
+                in_txn(conn, None, false, move |txn| {
                     let mut stmt = c!("deleting CIDs (prep)" => txn.prepare_cached(
                         "DELETE FROM cids WHERE \
                             id = ? AND \
@@ -457,7 +462,6 @@ pub(crate) fn incremental_gc(
                     Ok(())
                 })?;
             }
-            v.clear();
         }
     }
 
@@ -473,36 +477,36 @@ pub(crate) fn delete_temp_pin(txn: &Transaction, pin: i64) -> crate::Result<()> 
 
 pub(crate) fn extend_temp_pin(
     txn: &Transaction,
-    pin: &mut TempPin,
+    mut id: i64,
     links: Vec<impl ToSql>,
-) -> crate::Result<()> {
+) -> crate::Result<i64> {
     for link in links {
         let block_id = c!("getting ID for temp pinning" => get_or_create_id(txn, link));
         // it is important that the above is a write action, because otherwise a rollback may
         // invalidate the id stored in the TempPin in the below
-        add_temp_pin(txn, block_id, pin).context("extending temp_pin")?;
+        id = add_temp_pin(txn, block_id, id).context("extending temp_pin")?;
     }
-    Ok(())
+    Ok(id)
 }
 
-fn add_temp_pin(txn: &Transaction, block_id: i64, pin: &mut TempPin) -> crate::Result<()> {
-    if pin.id > 0 {
+fn add_temp_pin(txn: &Transaction, block_id: i64, pin: i64) -> crate::Result<i64> {
+    if pin > 0 {
         txn.prepare_cached("INSERT OR IGNORE INTO temp_pins (id, block_id) VALUES (?, ?)")
             .ctx("extending existing temp_pin (prep)")?
-            .execute([pin.id, block_id])
+            .execute([pin, block_id])
             .ctx("extending existing temp_pin")?;
+        Ok(pin)
     } else {
         // we must not reuse IDs, but sqlite takes care of transactionality here
-        pin.id = txn
+        Ok(txn
             .prepare_cached(
                 "INSERT INTO temp_pins (id, block_id) VALUES \
                 ((SELECT coalesce(max(id), 0) FROM temp_pins) + 1, ?) RETURNING id",
             )
             .ctx("creating new temp_pin (prep)")?
             .query_row([block_id], |row| row.get(0))
-            .ctx("creating new temp_pin")?;
+            .ctx("creating new temp_pin")?)
     }
-    Ok(())
 }
 
 pub(crate) struct PutBlockResult {
@@ -517,8 +521,8 @@ pub(crate) fn put_block<C: ToSql>(
     key: &C,
     data: &[u8],
     links: impl IntoIterator<Item = C>,
-    pin: Option<&mut TempPin>,
-) -> crate::Result<PutBlockResult> {
+    mut pin: Option<i64>,
+) -> crate::Result<(Option<i64>, PutBlockResult)> {
     // this is important: we need write lock on the table so that add_temp_pin is never rolled back
     let block_id = c!("getting put_block ID" => get_or_create_id(txn, key));
     let block_exists = txn
@@ -550,15 +554,18 @@ pub(crate) fn put_block<C: ToSql>(
                 .ctx("adding put_block link")?;
         }
     }
-    if let Some(pin) = pin {
+    if let Some(pin) = pin.as_mut() {
         // create a temporary alias for the block, even if it already exists
         // this is only safe because get_or_create_id ensured that we have write lock on the table
-        add_temp_pin(txn, block_id, pin).context("adding put_block temp_pin")?;
+        *pin = add_temp_pin(txn, block_id, *pin).context("adding put_block temp_pin")?;
     }
-    Ok(PutBlockResult {
-        id: block_id,
-        block_exists,
-    })
+    Ok((
+        pin,
+        PutBlockResult {
+            id: block_id,
+            block_exists,
+        },
+    ))
 }
 
 /// Get a block
@@ -996,12 +1003,16 @@ pub(crate) fn integrity_check(conn: &mut Connection) -> crate::Result<Vec<String
 ///
 /// this is an attempt to avoid spamming the log with lots of irrelevant info.
 /// execute a statement in a write transaction
-pub(crate) fn in_txn<T>(
+pub(crate) fn in_txn<T, F>(
     conn: &mut Connection,
     name: Option<(&str, Duration)>,
     immediate: bool,
-    mut f: impl FnMut(&Transaction) -> crate::Result<T>,
-) -> crate::Result<T> {
+    f: F,
+) -> crate::Result<T>
+where
+    // since this function can be retried many times, it must no remember the Transaction nor reference other state
+    F: for<'a> Fn(&'a Transaction) -> crate::Result<T> + 'static,
+{
     let _span = if let Some(name) = name.map(|x| x.0).filter(|x| !x.is_empty()) {
         tracing::debug_span!("txn", "{}", name).entered()
     } else {

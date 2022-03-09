@@ -8,7 +8,8 @@ use fnv::FnvHashSet;
 use libipld::{cid, codec::References, store::StoreParams, Cid, Ipld};
 use parking_lot::Mutex;
 use std::{
-    collections::HashSet, convert::TryFrom, iter::FromIterator, marker::PhantomData, mem, sync::Arc,
+    borrow::Cow, collections::HashSet, convert::TryFrom, iter::FromIterator, marker::PhantomData,
+    mem, sync::Arc,
 };
 
 pub struct Transaction<'a, S> {
@@ -59,8 +60,13 @@ where
     }
 
     /// Set or delete an alias
-    pub fn alias(&mut self, name: impl AsRef<[u8]>, link: Option<&Cid>) -> Result<()> {
+    pub fn alias<'b>(
+        &mut self,
+        name: impl Into<Cow<'b, [u8]>>,
+        link: Option<&'b Cid>,
+    ) -> Result<()> {
         let link: Option<CidBytes> = link.map(CidBytes::try_from).transpose()?;
+        let name = name.into().into_owned();
         in_txn(self.inner, None, true, move |txn| {
             alias(txn, name.as_ref(), link.as_ref())
         })?;
@@ -76,7 +82,8 @@ where
     }
 
     /// Resolves an alias to a cid.
-    pub fn resolve(&mut self, name: impl AsRef<[u8]>) -> Result<Option<Cid>> {
+    pub fn resolve<'b>(&mut self, name: impl Into<Cow<'b, [u8]>>) -> Result<Option<Cid>> {
+        let name = name.into().into_owned();
         in_txn(self.inner, None, true, move |txn| {
             resolve::<CidBytes>(txn, name.as_ref())?
                 .map(|c| Cid::try_from(&c))
@@ -93,8 +100,9 @@ where
     /// Extend temp pin with an additional cid
     pub fn extend_temp_pin(&mut self, pin: &mut TempPin, link: &Cid) -> Result<()> {
         let link = CidBytes::try_from(link)?;
-        in_txn(self.inner, None, true, move |txn| {
-            extend_temp_pin(txn, pin, vec![link])
+        let id = pin.id;
+        pin.id = in_txn(self.inner, None, true, move |txn| {
+            extend_temp_pin(txn, id, vec![link])
         })?;
         Ok(())
     }
@@ -144,7 +152,9 @@ where
     /// Given a root of a dag, gives all cids which we do not have data for.
     pub fn get_missing_blocks<C: FromIterator<Cid>>(&mut self, cid: &Cid) -> Result<C> {
         let cid = CidBytes::try_from(cid)?;
-        let result = in_txn(self.inner, None, false, |txn| get_missing_blocks(txn, cid))?;
+        let result = in_txn(self.inner, None, false, move |txn| {
+            get_missing_blocks(txn, cid)
+        })?;
         let res = result
             .iter()
             .map(Cid::try_from)
@@ -167,7 +177,7 @@ where
     }
 
     /// Put a block. This will only be completed once the transaction is successfully committed
-    pub fn put_block(&mut self, block: &Block<S>, mut pin: Option<&mut TempPin>) -> Result<()> {
+    pub fn put_block(&mut self, block: Block<S>, pin: Option<&mut TempPin>) -> Result<()> {
         let cid_bytes = CidBytes::try_from(block.cid())?;
         let mut links = Vec::new();
         block.references(&mut links)?;
@@ -175,28 +185,25 @@ where
             .iter()
             .map(CidBytes::try_from)
             .collect::<std::result::Result<FnvHashSet<_>, cid::Error>>()?;
-        let res = in_txn(self.inner, None, true, move |txn| {
-            #[allow(clippy::needless_option_as_deref)]
-            put_block(
-                txn,
-                &cid_bytes,
-                block.data(),
-                links.iter().copied(),
-                pin.as_deref_mut(),
-            )
+        let id = pin.as_ref().map(|p| p.id);
+        let cid = *block.cid();
+        let len = block.data().len();
+        let (opt_id, res) = in_txn(self.inner, None, true, move |txn| {
+            put_block(txn, &cid_bytes, block.data(), links.iter().copied(), id)
         })?;
-        let write_info = WriteInfo::new(
-            BlockInfo::new(res.id, block.cid(), block.data().len()),
-            res.block_exists,
-        );
+        if let (Some(id), Some(pin)) = (opt_id, pin) {
+            pin.id = id;
+        }
+        let write_info = WriteInfo::new(BlockInfo::new(res.id, &cid, len), res.block_exists);
         self.info.written.push(write_info);
         Ok(())
     }
 
     /// Get a block
     pub fn get_block(&mut self, cid: &Cid) -> Result<Option<Vec<u8>>> {
+        let cid1 = *cid;
         let response = in_txn(self.inner, None, false, move |txn| {
-            get_block(txn, &CidBytes::try_from(cid)?)
+            get_block(txn, &CidBytes::try_from(&cid1)?)
         })?;
         if let Some(info) = response
             .as_ref()

@@ -67,9 +67,10 @@ fn main() -> anyhow::Result<()> {
                     store
                         .put_blocks(vec![a, b, c, d, e], Some(&mut pin))
                         .unwrap();
-                    store.put_block(&root, Some(&mut pin)).unwrap();
+                    let cid = *root.cid();
+                    store.put_block(root, Some(&mut pin)).unwrap();
                     store
-                        .alias(format!("theRoot-{}", r).as_str(), Some(root.cid()))
+                        .alias(format!("theRoot-{}", r).as_bytes(), Some(&cid))
                         .unwrap();
                     i
                 })
@@ -85,7 +86,10 @@ fn main() -> anyhow::Result<()> {
                     if count < r {
                         continue;
                     }
-                    let cid = store.resolve(format!("theRoot-{}", r)).unwrap().unwrap();
+                    let cid = store
+                        .resolve(format!("theRoot-{}", r).as_bytes())
+                        .unwrap()
+                        .unwrap();
                     let root: Node = DagCborCodec
                         .decode(store.get_block(&cid).unwrap().unwrap().as_slice())
                         .unwrap();

@@ -16,6 +16,7 @@ use libipld::{prelude::*, DagCbor};
 use maplit::hashset;
 use rusqlite::{params, Connection};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     iter::FromIterator,
     path::{Path, PathBuf},
@@ -60,7 +61,7 @@ impl BlockStore {
             .map_err(|e| BlockStoreError::Other(e.into()))?
             .into_path()
             .join("db");
-        self.0.backup(file.as_path())?;
+        self.0.backup(file.clone())?;
         Ok(file)
     }
 
@@ -68,10 +69,32 @@ impl BlockStore {
         self.0.temp_pin()
     }
 
+    pub fn alias<'b>(
+        &mut self,
+        name: impl Into<Cow<'b, [u8]>>,
+        link: Option<&'b Cid>,
+    ) -> Result<()> {
+        let ret = self.0.alias(name, link);
+        if ret.is_err() {
+            match self.backup() {
+                Ok(p) => eprintln!("wrote backup to {}", p.display()),
+                Err(e) => eprintln!("couldn’t write backup: {:#}", e),
+            }
+        }
+        ret
+    }
+    pub fn resolve<'b>(&mut self, name: impl Into<Cow<'b, [u8]>>) -> Result<Option<Cid>> {
+        let ret = self.0.resolve(name);
+        if ret.is_err() {
+            match self.backup() {
+                Ok(p) => eprintln!("wrote backup to {}", p.display()),
+                Err(e) => eprintln!("couldn’t write backup: {:#}", e),
+            }
+        }
+        ret
+    }
     delegate! {
-        alias(name: impl AsRef<[u8]>, link: Option<&Cid>) -> Result<()>;
         reverse_alias(cid: &Cid) -> Result<Option<HashSet<Vec<u8>>>>;
-        resolve(name: impl AsRef<[u8]>) -> Result<Option<Cid>>;
         extend_temp_pin(pin: &mut TempPin, link: &Cid) -> Result<()>;
         has_cid(cid: &Cid) -> Result<bool>;
         has_block(cid: &Cid) -> Result<bool>;
@@ -80,7 +103,7 @@ impl BlockStore {
         get_descendants<C: FromIterator<Cid>>(cid: &Cid) -> Result<C>;
         get_missing_blocks<C: FromIterator<Cid>>(cid: &Cid) -> Result<C>;
         aliases<C: FromIterator<(Vec<u8>, Cid)>>() -> Result<C>;
-        put_block(block: &Block, pin: Option<&mut TempPin>) -> Result<()>;
+        put_block(block: Block, pin: Option<&mut TempPin>) -> Result<()>;
         get_block(cid: &Cid) -> Result<Option<Vec<u8>>>;
         get_store_stats() -> Result<StoreStats>;
         gc() -> Result<()>;
@@ -182,7 +205,7 @@ fn insert_get() {
     let b = block("b");
     let c = block("c");
     let a = links("a", vec![&b, &c, &c]);
-    store.put_block(&a, None).unwrap();
+    store.put_block(a.clone(), None).unwrap();
     // we should have all three cids
     assert!(store.has_cid(a.cid()).unwrap());
     assert!(store.has_cid(b.cid()).unwrap());
@@ -204,11 +227,11 @@ fn insert_get() {
         vec![*b.cid(), *c.cid()]
     );
     // alias the root
-    store.alias(b"alias1", Some(a.cid())).unwrap();
+    store.alias(b"alias1".as_ref(), Some(a.cid())).unwrap();
     store.gc().unwrap();
     // after gc, we shold still have the block
     assert!(store.has_block(a.cid()).unwrap());
-    store.alias(b"alias1", None).unwrap();
+    store.alias(b"alias1".as_ref(), None).unwrap();
     store.gc().unwrap();
     // after gc, we shold no longer have the block
     assert!(!store.has_block(a.cid()).unwrap());
@@ -223,11 +246,11 @@ fn incremental_insert() -> anyhow::Result<()> {
     let c = links("c", vec![&d, &e]);
     let a = links("a", vec![&b, &c]);
     // alias before even adding the block
-    store.alias(b"alias1", Some(a.cid()))?;
+    store.alias(b"alias1".as_ref(), Some(a.cid()))?;
     assert!(store.has_cid(a.cid())?);
-    store.put_block(&a, None)?;
+    store.put_block(a.clone(), None)?;
     store.gc()?;
-    store.put_block(&c, None)?;
+    store.put_block(c.clone(), None)?;
     store.gc()?;
     // we should have all five cids
     assert!(store.has_cid(a.cid())?);
@@ -262,11 +285,11 @@ fn incremental_insert() -> anyhow::Result<()> {
             .collect::<FnvHashSet<_>>()
     );
     // alias the root
-    store.alias(b"alias1", Some(a.cid()))?;
+    store.alias(b"alias1".as_ref(), Some(a.cid()))?;
     store.gc()?;
     // after gc, we shold still have the block
     assert!(store.has_block(a.cid())?);
-    store.alias(b"alias1", Some(c.cid()))?;
+    store.alias(b"alias1".as_ref(), Some(c.cid()))?;
     store.gc()?;
     assert!(!store.has_block(a.cid())?);
     assert!(!store.has_cid(a.cid())?);
@@ -286,14 +309,14 @@ fn size_targets() -> anyhow::Result<()> {
     // add some pinned stuff at the very beginning
     for i in 0..2 {
         let block = pinned(i);
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
         store.alias(block.cid().to_bytes(), Some(block.cid()))?;
     }
 
     // add data that is within the size targets
     for i in 0..8 {
         let block = unpinned(i);
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
     }
 
     // check that gc does nothing
@@ -306,7 +329,7 @@ fn size_targets() -> anyhow::Result<()> {
     // add some more stuff to exceed the size targets
     for i in 8..13 {
         let block = unpinned(i);
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
     }
 
     // check that gc gets triggered and removes min_blocks
@@ -349,14 +372,14 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
     // add some pinned stuff at the very beginning
     for i in 0..2 {
         let block = pinned(i);
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
         store.alias(block.cid().to_bytes(), Some(block.cid()))?;
     }
 
     // add data that is within the size targets
     for i in 0..8 {
         let block = unpinned(i);
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
     }
 
     // check that gc does nothing
@@ -369,7 +392,7 @@ fn cache_test(tracker: impl CacheTracker + 'static) -> anyhow::Result<()> {
     // add some more stuff to exceed the size targets
     for i in 8..13 {
         let block = unpinned(i);
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
     }
 
     // access one of the existing unpinned blocks to move it to the front
@@ -430,7 +453,7 @@ fn test_migration() -> anyhow::Result<()> {
 fn test_resolve() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let block = pinned(0);
-    store.put_block(&block, None)?;
+    store.put_block(block.clone(), None)?;
     store.alias(&b"leaf"[..], Some(block.cid()))?;
     let cid2 = store.resolve(&b"leaf"[..])?;
     assert_eq!(Some(*block.cid()), cid2);
@@ -442,7 +465,7 @@ fn test_reverse_alias() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let block = pinned(0);
     assert_eq!(store.reverse_alias(block.cid())?, None);
-    store.put_block(&block, None)?;
+    store.put_block(block.clone(), None)?;
     assert_eq!(store.reverse_alias(block.cid())?, Some(hashset! {}));
     store.alias(&b"leaf"[..], Some(block.cid()))?;
     assert_eq!(
@@ -450,7 +473,7 @@ fn test_reverse_alias() -> anyhow::Result<()> {
         Some(hashset! {b"leaf".to_vec()})
     );
     let block2 = links("1", vec![&block]); // needs link to cid
-    store.put_block(&block2, None)?;
+    store.put_block(block2.clone(), None)?;
     store.alias(&b"root"[..], Some(block2.cid()))?;
     assert_eq!(
         store.reverse_alias(block.cid())?,
@@ -471,10 +494,10 @@ fn test_aliases() -> anyhow::Result<()> {
     let mut store = BlockStore::memory(Config::default())?;
     let block = pinned(0);
     let cid = block.cid();
-    store.put_block(&block, None)?;
-    store.alias(&b"a", Some(cid))?;
-    store.alias(&b"b", Some(cid))?;
-    store.alias(&b"c", Some(cid))?;
+    store.put_block(block.clone(), None)?;
+    store.alias(b"a".as_ref(), Some(cid))?;
+    store.alias(b"b".as_ref(), Some(cid))?;
+    store.alias(b"c".as_ref(), Some(cid))?;
     let mut aliases: Vec<(Vec<u8>, Cid)> = store.aliases()?;
     aliases.sort_by_key(|x| x.0.clone());
     assert_eq!(
@@ -495,11 +518,11 @@ fn temp_pin() -> anyhow::Result<()> {
     let b = block("b");
     let mut alias = store.temp_pin();
 
-    store.put_block(&a, Some(&mut alias))?;
+    store.put_block(a.clone(), Some(&mut alias))?;
     store.gc()?;
     assert!(store.has_block(a.cid())?);
 
-    store.put_block(&b, Some(&mut alias))?;
+    store.put_block(b.clone(), Some(&mut alias))?;
     store.gc()?;
     assert!(store.has_block(b.cid())?);
 
@@ -540,7 +563,7 @@ fn shared_file() {
 
     for i in 0..10 {
         let block = block(&format!("block-{}", i));
-        db1.put_block(&block, None).unwrap();
+        db1.put_block(block.clone(), None).unwrap();
         assert_eq!(
             db2.get_block(block.cid()).unwrap(),
             Some(block.data().to_vec())
@@ -554,7 +577,7 @@ fn large_dag_gc() -> anyhow::Result<()> {
     let mut l = Vec::new();
     for i in 0..100 {
         let block = links(&format!("node-{}", i), l.iter().collect());
-        store.put_block(&block, None)?;
+        store.put_block(block.clone(), None)?;
         l.push(block);
     }
     // pin the root

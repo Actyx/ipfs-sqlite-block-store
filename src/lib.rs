@@ -67,6 +67,7 @@ use libipld::{codec::References, store::StoreParams, Block, Cid, Ipld};
 use parking_lot::Mutex;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     fmt,
     iter::FromIterator,
@@ -453,9 +454,9 @@ where
         })
     }
 
-    pub fn backup(&mut self, path: impl AsRef<Path>) -> Result<()> {
+    pub fn backup(&mut self, path: PathBuf) -> Result<()> {
         in_txn(&mut self.conn, None, false, move |txn| {
-            txn.backup(DatabaseName::Main, path.as_ref(), None)
+            txn.backup(DatabaseName::Main, path.as_path(), None)
                 .ctx("backing up DB")
         })
     }
@@ -597,15 +598,23 @@ where
     S: StoreParams,
     Ipld: References<S::Codecs>,
 {
-    delegate! {
-        /// Set or delete an alias
-        alias(name: impl AsRef<[u8]>, link: Option<&Cid>) -> Result<()>;
+    /// Set or delete an alias
+    pub fn alias<'b>(
+        &mut self,
+        name: impl Into<Cow<'b, [u8]>>,
+        link: Option<&'b Cid>,
+    ) -> Result<()> {
+        self.transaction().alias(name, link)
+    }
 
+    /// Resolves an alias to a cid
+    pub fn resolve<'b>(&mut self, name: impl Into<Cow<'b, [u8]>>) -> Result<Option<Cid>> {
+        self.transaction().resolve(name)
+    }
+
+    delegate! {
         /// Returns the aliases referencing a cid
         reverse_alias(cid: &Cid) -> Result<Option<HashSet<Vec<u8>>>>;
-
-        /// Resolves an alias to a cid
-        resolve(name: impl AsRef<[u8]>) -> Result<Option<Cid>>;
 
         /// Extend temp pin with an additional cid
         extend_temp_pin(pin: &mut TempPin, link: &Cid) -> Result<()>;
@@ -636,7 +645,7 @@ where
         /// Put a block
         ///
         /// This will only be completed once the transaction is successfully committed.
-        put_block(block: &Block<S>, pin: Option<&mut TempPin>) -> Result<()>;
+        put_block(block: Block<S>, pin: Option<&mut TempPin>) -> Result<()>;
 
         /// Get a block
         get_block(cid: &Cid) -> Result<Option<Vec<u8>>>;
@@ -654,7 +663,7 @@ where
         let mut txn = self.transaction();
         for block in blocks {
             #[allow(clippy::needless_option_as_deref)]
-            txn.put_block(&block, pin.as_deref_mut())?;
+            txn.put_block(block, pin.as_deref_mut())?;
         }
         txn.commit()
     }

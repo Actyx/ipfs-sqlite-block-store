@@ -102,7 +102,7 @@ fn main() -> anyhow::Result<()> {
         let (tree_root, tree_blocks) = build_tree(&format!("tree-{}", i), 10, 4)?;
         store.put_blocks(tree_blocks, None)?;
         if i % 2 == 0 {
-            store.alias(&format!("tree-alias-{}", i).as_bytes(), Some(&tree_root))?;
+            store.alias(format!("tree-alias-{}", i).as_bytes(), Some(&tree_root))?;
         }
     }
     let (tree_root, tree_blocks) = build_tree("test-tree", 10, 4)?;
@@ -118,21 +118,21 @@ fn main() -> anyhow::Result<()> {
         tree_root,
         store.get_descendants::<Vec<_>>(&tree_root)?.len(),
     );
-    store.put_block(&block("a", None), None)?;
+    store.put_block(block("a", None), None)?;
     println!(
         "{:?}",
         fmt_cids(store.get_missing_blocks::<Vec<_>>(block("a", None).cid())?)
     );
-    store.put_block(&block("b", None), None)?;
-    store.put_block(&block("c", None), None)?;
+    store.put_block(block("b", None), None)?;
+    store.put_block(block("c", None), None)?;
     println!(
         "{:?}",
         fmt_cids(store.get_descendants::<Vec<_>>(block("a", None).cid())?)
     );
-    store.put_block(&block("d", None), None)?;
+    store.put_block(block("d", None), None)?;
 
-    store.alias(b"source1", Some(block("a", None).cid()))?;
-    store.alias(b"source2", Some(block("d", None).cid()))?;
+    store.alias(b"source1".as_ref(), Some(block("a", None).cid()))?;
+    store.alias(b"source2".as_ref(), Some(block("d", None).cid()))?;
     println!("starting gc");
     let t0 = Instant::now();
     store.gc()?;

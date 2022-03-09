@@ -2,6 +2,16 @@
 
 This changelog was started sometime after the 0.7 release.
 
+## Release 0.12
+
+- fix some lifetimes and ownership issues to ensure that transaction retries cannot yield corrupt results
+
+## Release 0.11
+
+- automatically upgrade DB schema to new foreign key definitions
+
+  **This makes downgrades to 0.10 impossible.**
+
 0.11.1: permit more schema differences when upgrading (case insensitive, unique vs. primary key, autoincrement)
 
 0.11.3: split up transaction for cleaning up CIDs to avoid blocking the DB for long times
@@ -9,12 +19,6 @@ This changelog was started sometime after the 0.7 release.
 0.11.4: improve logging of startup latencies and only do integrity check after schema change
 
 0.11.5: truncate WAL before and after GC and give more information about DB stats
-
-## Release 0.11
-
-- automatically upgrade DB schema to new foreign key definitions
-
-  **This makes downgrades to 0.10 impossible.**
 
 ## Release 0.10
 
