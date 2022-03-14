@@ -587,7 +587,10 @@ macro_rules! delegate {
         $(
             $(#[$attr])*
             pub fn $n$(<$v: $vt>)?(&mut self, $($arg: $typ),*) -> $ret {
-                self.transaction().$n($($arg),*)
+                let mut txn = self.transaction();
+                let ret = txn.$n($($arg),*)?;
+                txn.commit()?;
+                Ok(ret)
             }
         )+
     };
