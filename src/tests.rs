@@ -218,13 +218,13 @@ fn insert_get() {
     assert_eq!(store.get_block(a.cid()).unwrap(), Some(a.data().to_vec()));
     // check descendants
     assert_eq!(
-        store.get_descendants::<Vec<Cid>>(a.cid()).unwrap(),
-        vec![*a.cid(), *b.cid(), *c.cid()]
+        store.get_descendants::<HashSet<Cid>>(a.cid()).unwrap(),
+        hashset![*a.cid(), *b.cid(), *c.cid()]
     );
     // check missing blocks - should be b and c
     assert_eq!(
-        store.get_missing_blocks::<Vec<_>>(a.cid()).unwrap(),
-        vec![*b.cid(), *c.cid()]
+        store.get_missing_blocks::<HashSet<_>>(a.cid()).unwrap(),
+        hashset![*b.cid(), *c.cid()]
     );
     // alias the root
     store.alias(b"alias1".as_ref(), Some(a.cid())).unwrap();

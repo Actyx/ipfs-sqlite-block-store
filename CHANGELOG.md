@@ -2,6 +2,10 @@
 
 This changelog was started sometime after the 0.7 release.
 
+## Release 0.13
+
+- update to libipld 0.14 and multihash 0.16
+
 ## Release 0.12
 
 - fix some lifetimes and ownership issues to ensure that transaction retries cannot yield corrupt results
